@@ -1,0 +1,1 @@
+{"$schema":"../gen/schemas/desktop-schema.json","description":"NightCut default capability (main window, core invoke only)","identifier":"default","permissions":["core:default"],"windows":["main"]}

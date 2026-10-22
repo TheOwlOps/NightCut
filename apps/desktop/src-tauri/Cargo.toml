@@ -1,0 +1,22 @@
+[package]
+name = "nightcut"
+version = "0.1.0"
+edition = "2021"
+description = "NightCut desktop shell (Tauri 2)"
+license = "MIT"
+
+# Detached from the root workspace on purpose: building the shell needs
+# Tauri/WebKit system libraries, the core crates must stay testable without
+# them. Build with: cargo build (in this dir) or `npm run tauri build`.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+editor-core = { path = "../../../crates/editor-core" }
+media-engine = { path = "../../../crates/media-engine" }
+export-engine = { path = "../../../crates/export-engine" }

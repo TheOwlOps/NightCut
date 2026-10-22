@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="NightCut logo">
+  <!-- NightCut mark: a golden crescent moon (Night) sliced by a cyan
+       edit cut (Cut), with a play button carved into the moon.
+       The crescent is drawn by overlaying a background-colored circle —
+       no masks, so it renders identically in every SVG engine. -->
+  <defs>
+    <linearGradient id="moon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7dc7a"/>
+      <stop offset="1" stop-color="#dfa92e"/>
+    </linearGradient>
+    <linearGradient id="blade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#0891b2"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#0b1026"/>
+
+  <!-- stars -->
+  <circle cx="392" cy="118" r="7" fill="#e2e8f0"/>
+  <circle cx="428" cy="196" r="4.5" fill="#94a3b8"/>
+  <path d="M368 168l4.5 11.5L384 184l-11.5 4.5L368 200l-4.5-11.5L352 184l11.5-4.5z" fill="#e2e8f0"/>
+
+  <!-- crescent moon: gold disc minus an offset background disc -->
+  <circle cx="238" cy="246" r="152" fill="url(#moon)"/>
+  <circle cx="322" cy="192" r="130" fill="#0b1026"/>
+  <!-- play button carved out of the moon -->
+  <path d="M118 196 L118 296 L198 246 Z" fill="#0b1026"/>
+
+  <!-- the cut: a cyan splice blade slicing under the moon -->
+  <g transform="rotate(-22 256 356)">
+    <rect x="104" y="344" width="304" height="24" rx="12" fill="url(#blade)"/>
+  </g>
+  <circle cx="118" cy="392" r="10" fill="#67e8f9"/>
+</svg>

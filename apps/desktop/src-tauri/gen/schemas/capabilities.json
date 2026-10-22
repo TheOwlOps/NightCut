@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"NightCut default capability (main window, core invoke only)","local":true,"windows":["main"],"permissions":["core:default"]}}

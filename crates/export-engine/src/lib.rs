@@ -1,0 +1,441 @@
+//! NightCut export engine: turns a non-destructive `Project` into one
+//! FFmpeg invocation.
+//!
+//! Phase 0 scope (single sequential video track + text overlays):
+//! - each video clip is trimmed, speed-adjusted, scaled/padded to canvas
+//! - clips are concatenated in timeline order
+//! - text clips become `drawtext` overlays enabled during their window
+//! - audio comes from the video clips; a separate music track is mixed in
+//!   when present (first audio-track clip, volume-scaled, looped/trimmed)
+//! Anything richer (multi-layer compositing) belongs to the wgpu compositor
+//! in a later phase — this module is the real render path until then.
+
+use editor_core::{Effect, Project, TrackKind};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ExportError {
+    #[error("project has no video clips to export")]
+    NoVideoClips,
+    #[error("clip {0} has no resolved source path")]
+    UnresolvedSource(String),
+    #[error("ffmpeg failed to start: {0}")]
+    Spawn(#[from] std::io::Error),
+    #[error("ffmpeg exited with status {0}")]
+    FfmpegFailed(std::process::ExitStatus),
+}
+
+pub type Result<T> = std::result::Result<T, ExportError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Encoder {
+    /// libx264 — always available.
+    Software,
+    /// NVIDIA NVENC.
+    Nvenc,
+    /// Intel QuickSync.
+    QuickSync,
+    /// Apple VideoToolbox (macOS).
+    VideoToolbox,
+}
+
+impl Encoder {
+    pub fn ffmpeg_codec(&self) -> &'static str {
+        match self {
+            Encoder::Software => "libx264",
+            Encoder::Nvenc => "h264_nvenc",
+            Encoder::QuickSync => "h264_qsv",
+            Encoder::VideoToolbox => "h264_videotoolbox",
+        }
+    }
+    /// Best encoder to try first on this OS, before falling back to software.
+    pub fn preferred_for_os() -> Self {
+        if cfg!(target_os = "macos") { Encoder::VideoToolbox }
+        else { Encoder::Software }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportSettings {
+    pub encoder: Encoder,
+    pub crf: u8,
+    /// Optional drawtext font file; FFmpeg needs a real font path for text.
+    pub font_file: Option<PathBuf>,
+}
+
+impl Default for ExportSettings {
+    fn default() -> Self {
+        Self { encoder: Encoder::Software, crf: 20, font_file: None }
+    }
+}
+
+/// Translate one effect into FFmpeg *video* filters for a clip.
+/// `clip_duration` is the clip's played duration (after trim/speed).
+pub fn effect_video_filters(effect: &Effect, clip_duration: f64) -> Vec<String> {
+    match *effect {
+        Effect::Adjust { brightness, contrast, saturation } => vec![format!(
+            "eq=brightness={brightness:.3}:contrast={contrast:.3}:saturation={saturation:.3}"
+        )],
+        Effect::Grayscale => vec!["hue=s=0".to_string()],
+        Effect::Sepia { intensity } => {
+            let i = intensity.clamp(0.0, 1.0);
+            let sepia = [
+                [0.393, 0.769, 0.189],
+                [0.349, 0.686, 0.168],
+                [0.272, 0.534, 0.131],
+            ];
+            let mut vals: Vec<String> = Vec::new();
+            for (row_idx, row) in sepia.iter().enumerate() {
+                for (col_idx, target) in row.iter().enumerate() {
+                    let identity = if row_idx == col_idx { 1.0 } else { 0.0 };
+                    vals.push(format!("{:.3}", identity + (target - identity) * i));
+                }
+                vals.push("0".to_string()); // alpha contribution per row
+            }
+            vals.extend(["0".to_string(), "0".to_string(), "0".to_string(), "1".to_string()]);
+            vec![format!("colorchannelmixer={}", vals.join(":"))]
+        }
+        Effect::Blur { sigma } => vec![format!("gblur=sigma={:.2}", sigma.clamp(0.0, 50.0))],
+        Effect::Sharpen { amount } => {
+            vec![format!("unsharp=5:5:{:.2}:5:5:0", amount.clamp(0.0, 2.0))]
+        }
+        Effect::Vignette { strength } => {
+            let angle = (1.35 - strength.clamp(0.0, 1.0)).clamp(0.35, 1.35);
+            vec![format!("vignette=angle={angle:.3}")]
+        }
+        Effect::Temperature { kelvin } => vec![format!(
+            "colortemperature=temperature={:.0}:mix=1",
+            kelvin.clamp(1000.0, 11000.0)
+        )],
+        Effect::Mirror => vec!["hflip".to_string()],
+        Effect::Invert => vec!["negate".to_string()],
+        Effect::FadeIn { duration } => {
+            vec![format!("fade=t=in:st=0.000:d={:.3}", duration.max(0.0))]
+        }
+        Effect::FadeOut { duration } => {
+            let st = (clip_duration - duration).max(0.0);
+            vec![format!("fade=t=out:st={st:.3}:d={:.3}", duration.max(0.0))]
+        }
+    }
+}
+
+/// Translate one effect into FFmpeg *audio* filters (only fades apply).
+pub fn effect_audio_filters(effect: &Effect, clip_duration: f64) -> Vec<String> {
+    match *effect {
+        Effect::FadeIn { duration } => {
+            vec![format!("afade=t=in:st=0.000:d={:.3}", duration.max(0.0))]
+        }
+        Effect::FadeOut { duration } => {
+            let st = (clip_duration - duration).max(0.0);
+            vec![format!("afade=t=out:st={st:.3}:d={:.3}", duration.max(0.0))]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Escape a string for use inside an FFmpeg drawtext `text='...'`.
+pub fn escape_drawtext(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace(':', "\\:")
+        .replace('%', "\\%")
+}
+
+/// Build the full FFmpeg argument list for a project.
+///
+/// `sources` maps clip ids to absolute source paths (the UI resolves the
+/// project-relative `source` field before calling).
+pub fn build_ffmpeg_args(
+    project: &Project,
+    sources: &BTreeMap<String, PathBuf>,
+    output: &Path,
+    settings: &ExportSettings,
+) -> Result<Vec<String>> {
+    let video_track = project.tracks.iter().find(|t| t.kind == TrackKind::Video);
+    let mut video_clips: Vec<_> = video_track
+        .map(|t| t.clips.iter().filter(|c| !c.source.is_empty()).collect())
+        .unwrap_or_default();
+    if video_clips.is_empty() { return Err(ExportError::NoVideoClips); }
+    video_clips.sort_by(|a, b| a.timeline_start.total_cmp(&b.timeline_start));
+
+    let mut args: Vec<String> = vec!["-y".into(), "-v".into(), "error".into()];
+    for clip in &video_clips {
+        let path = sources.get(&clip.id)
+            .ok_or_else(|| ExportError::UnresolvedSource(clip.id.clone()))?;
+        args.push("-i".into());
+        args.push(path.display().to_string());
+    }
+    // Music/audio-track clips become extra inputs after the video inputs.
+    let audio_track = project.tracks.iter().find(|t| t.kind == TrackKind::Audio);
+    let music: Vec<_> = audio_track
+        .map(|t| t.clips.iter().filter(|c| !c.source.is_empty()).collect())
+        .unwrap_or_default();
+    for clip in &music {
+        let path = sources.get(&clip.id)
+            .ok_or_else(|| ExportError::UnresolvedSource(clip.id.clone()))?;
+        args.push("-i".into());
+        args.push(path.display().to_string());
+    }
+
+    let (w, h, fps) = (project.canvas.width, project.canvas.height, project.canvas.fps);
+    let mut filters: Vec<String> = Vec::new();
+
+    // Per-clip chains: trim -> speed -> scale/pad to canvas -> effects.
+    for (i, clip) in video_clips.iter().enumerate() {
+        let dur = clip.duration();
+        let mut vchain = vec![
+            format!("trim=start={:.3}:end={:.3}", clip.in_sec, clip.out_sec),
+            format!("setpts=(PTS-STARTPTS)/{:.3}", clip.speed.max(0.01)),
+            format!("scale={w}:{h}:force_original_aspect_ratio=decrease"),
+            format!("pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"),
+            format!("fps={fps}"),
+            "setsar=1".to_string(),
+        ];
+        for fx in &clip.effects {
+            vchain.extend(effect_video_filters(fx, dur));
+        }
+        filters.push(format!("[{i}:v]{}[v{i}]", vchain.join(",")));
+
+        let mut achain = vec![
+            format!("atrim=start={:.3}:end={:.3}", clip.in_sec, clip.out_sec),
+            "asetpts=PTS-STARTPTS".to_string(),
+            format!("atempo={:.3}", clip.speed.clamp(0.5, 2.0)),
+            "aresample=48000".to_string(),
+        ];
+        for fx in &clip.effects {
+            achain.extend(effect_audio_filters(fx, dur));
+        }
+        filters.push(format!("[{i}:a]{}[a{i}]", achain.join(",")));
+    }
+    let concat_inputs: String = (0..video_clips.len()).map(|i| format!("[v{i}][a{i}]")).collect();
+    filters.push(format!("{concat_inputs}concat=n={}:v=1:a=1[vcat][acat]", video_clips.len()));
+
+    // Text overlays on top of the concatenated video.
+    let mut current = "vcat".to_string();
+    if let Some(font) = &settings.font_file {
+        let text_track = project.tracks.iter().find(|t| t.kind == TrackKind::Text);
+        if let Some(track) = text_track {
+            for (j, clip) in track.clips.iter().enumerate() {
+                let Some(text) = &clip.text else { continue };
+                let next = format!("vtxt{j}");
+                filters.push(format!(
+                    "[{current}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-220:enable='between(t,{:.3},{:.3})'[{next}]",
+                    font.display(),
+                    escape_drawtext(text),
+                    clip.font_size.unwrap_or(64),
+                    clip.timeline_start,
+                    clip.timeline_end(),
+                ));
+                current = next;
+            }
+        }
+    }
+
+    // Audio out: clip audio, optionally mixed with the first music clip.
+    let audio_label = if let Some(music_clip) = music.first() {
+        let music_idx = video_clips.len(); // first extra input index
+        filters.push(format!(
+            "[{music_idx}:a]aresample=48000,volume={:.2}[music]",
+            music_clip.volume
+        ));
+        filters.push("[acat][music]amix=inputs=2:duration=first:dropout_transition=0[aout]".into());
+        "aout"
+    } else {
+        "acat"
+    };
+
+    args.push("-filter_complex".into());
+    args.push(filters.join(";"));
+    args.push("-map".into());
+    args.push(format!("[{current}]"));
+    args.push("-map".into());
+    args.push(format!("[{audio_label}]"));
+    args.push("-c:v".into());
+    args.push(settings.encoder.ffmpeg_codec().into());
+    if settings.encoder == Encoder::Software {
+        args.push("-crf".into());
+        args.push(settings.crf.to_string());
+        args.push("-preset".into());
+        args.push("medium".into());
+    }
+    args.push("-c:a".into());
+    args.push("aac".into());
+    args.push("-b:a".into());
+    args.push("160k".into());
+    args.push("-movflags".into());
+    args.push("+faststart".into());
+    args.push(output.display().to_string());
+    Ok(args)
+}
+
+/// Render a project to `output` with FFmpeg.
+pub fn render(
+    project: &Project,
+    sources: &BTreeMap<String, PathBuf>,
+    output: &Path,
+    settings: &ExportSettings,
+) -> Result<PathBuf> {
+    let args = build_ffmpeg_args(project, sources, output, settings)?;
+    let status = Command::new("ffmpeg").args(&args).status()?;
+    if !status.success() { return Err(ExportError::FfmpegFailed(status)); }
+    Ok(output.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use editor_core::Clip;
+
+    fn two_clip_project() -> (Project, BTreeMap<String, PathBuf>) {
+        let mut p = Project::default();
+        p.add_clip("track-video", Clip::new("c1", "a.mp4", 0.0, 4.0, 0.0)).unwrap();
+        p.add_clip("track-video", Clip::new("c2", "b.mp4", 1.0, 6.0, 4.0)).unwrap();
+        p.add_clip("track-text", Clip::text_clip("t1", "Hello: world", 0.5, 2.0)).unwrap();
+        let sources = BTreeMap::from([
+            ("c1".to_string(), PathBuf::from("/media/a.mp4")),
+            ("c2".to_string(), PathBuf::from("/media/b.mp4")),
+        ]);
+        (p, sources)
+    }
+
+    #[test]
+    fn builds_concat_graph_for_two_clips() {
+        let (p, sources) = two_clip_project();
+        let args = build_ffmpeg_args(&p, &sources, Path::new("out.mp4"), &ExportSettings::default()).unwrap();
+        let joined = args.join(" ");
+        assert!(joined.contains("concat=n=2"));
+        assert!(joined.contains("trim=start=1.000:end=6.000"));
+        assert!(joined.contains("scale=1080:1920"));
+        assert!(joined.contains("libx264"));
+        assert!(args.last().unwrap() == "out.mp4");
+    }
+
+    #[test]
+    fn text_overlay_needs_font_and_is_escaped() {
+        let (p, sources) = two_clip_project();
+        let settings = ExportSettings {
+            font_file: Some(PathBuf::from("/fonts/DejaVuSans-Bold.ttf")),
+            ..Default::default()
+        };
+        let args = build_ffmpeg_args(&p, &sources, Path::new("out.mp4"), &settings).unwrap();
+        let joined = args.join(" ");
+        assert!(joined.contains("drawtext"));
+        assert!(joined.contains("Hello\\: world"));
+        assert!(joined.contains("between(t,0.500,2.500)"));
+    }
+
+    #[test]
+    fn empty_project_errors() {
+        let p = Project::default();
+        let sources = BTreeMap::new();
+        assert!(build_ffmpeg_args(&p, &sources, Path::new("o.mp4"), &ExportSettings::default()).is_err());
+    }
+
+    #[test]
+    fn unresolved_source_errors() {
+        let (p, _) = two_clip_project();
+        let empty = BTreeMap::new();
+        assert!(matches!(
+            build_ffmpeg_args(&p, &empty, Path::new("o.mp4"), &ExportSettings::default()),
+            Err(ExportError::UnresolvedSource(_))
+        ));
+    }
+
+    #[test]
+    fn effects_become_ffmpeg_filters() {
+        let mut p = Project::default();
+        let mut c = Clip::new("c1", "a.mp4", 0.0, 4.0, 0.0);
+        c.effects = vec![
+            editor_core::Effect::Adjust { brightness: 0.1, contrast: 1.2, saturation: 0.8 },
+            editor_core::Effect::Grayscale,
+            editor_core::Effect::Blur { sigma: 5.0 },
+            editor_core::Effect::Mirror,
+            editor_core::Effect::FadeIn { duration: 0.5 },
+            editor_core::Effect::FadeOut { duration: 1.0 },
+        ];
+        p.add_clip("track-video", c).unwrap();
+        let sources = BTreeMap::from([("c1".to_string(), PathBuf::from("/media/a.mp4"))]);
+        let args = build_ffmpeg_args(&p, &sources, Path::new("o.mp4"), &ExportSettings::default()).unwrap();
+        let j = args.join(" ");
+        assert!(j.contains("eq=brightness=0.100:contrast=1.200:saturation=0.800"), "{j}");
+        assert!(j.contains("hue=s=0"));
+        assert!(j.contains("gblur=sigma=5.00"));
+        assert!(j.contains("hflip"));
+        assert!(j.contains("fade=t=in:st=0.000:d=0.500"));
+        assert!(j.contains("fade=t=out:st=3.000:d=1.000"));
+        assert!(j.contains("afade=t=out:st=3.000:d=1.000"));
+    }
+
+    #[test]
+    fn sepia_interpolates_matrix() {
+        let full = effect_video_filters(&editor_core::Effect::Sepia { intensity: 1.0 }, 4.0);
+        assert!(full[0].contains("colorchannelmixer=0.393:0.769:0.189:0"), "{}", full[0]);
+        let none = effect_video_filters(&editor_core::Effect::Sepia { intensity: 0.0 }, 4.0);
+        assert!(none[0].contains("colorchannelmixer=1.000:0.000:0.000:0"), "{}", none[0]);
+    }
+
+    #[test]
+    fn encoder_names() {
+        assert_eq!(Encoder::Nvenc.ffmpeg_codec(), "h264_nvenc");
+        assert_eq!(Encoder::VideoToolbox.ffmpeg_codec(), "h264_videotoolbox");
+    }
+
+    /// Live end-to-end render WITH effects applied — ignored by default.
+    #[test]
+    #[ignore]
+    fn renders_a_real_mp4_with_effects() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.mp4");
+        if !src.exists() {
+            let status = Command::new("ffmpeg")
+                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=30",
+                       "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                       "-c:v", "libx264", "-c:a", "aac", "-shortest"])
+                .arg(&src).status().unwrap();
+            assert!(status.success());
+        }
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        let mut c = Clip::new("c1", "src.mp4", 0.0, 2.0, 0.0);
+        c.effects = vec![
+            editor_core::Effect::Adjust { brightness: 0.05, contrast: 1.1, saturation: 0.9 },
+            editor_core::Effect::Sepia { intensity: 0.5 },
+            editor_core::Effect::Vignette { strength: 0.5 },
+            editor_core::Effect::Temperature { kelvin: 5200.0 },
+            editor_core::Effect::FadeIn { duration: 0.3 },
+            editor_core::Effect::FadeOut { duration: 0.3 },
+        ];
+        p.add_clip("track-video", c).unwrap();
+        let sources = BTreeMap::from([("c1".to_string(), src)]);
+        let out = dir.join("out-effects.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).unwrap();
+        assert!(out.metadata().unwrap().len() > 10_000);
+    }
+
+    /// Live end-to-end render with a generated test clip — ignored by
+    /// default, run with: cargo test -p export-engine -- --ignored
+    #[test]
+    #[ignore]
+    fn renders_a_real_mp4() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.mp4");
+        let status = Command::new("ffmpeg")
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=30",
+                   "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                   "-c:v", "libx264", "-c:a", "aac", "-shortest"])
+            .arg(&src).status().unwrap();
+        assert!(status.success());
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        p.add_clip("track-video", Clip::new("c1", "src.mp4", 0.0, 2.0, 0.0)).unwrap();
+        let sources = BTreeMap::from([("c1".to_string(), src)]);
+        let out = dir.join("out.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).unwrap();
+        assert!(out.metadata().unwrap().len() > 10_000);
+    }
+}

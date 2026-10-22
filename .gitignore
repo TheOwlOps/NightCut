@@ -1,0 +1,11 @@
+/target
+**/target
+node_modules
+dist
+.DS_Store
+*.log
+# FFmpeg sidecar binaries are downloaded on first run, never committed
+tools/ffmpeg/bin/
+# Per-user media cache created by media-engine
+.cache/
+*.nightcut.json.bak

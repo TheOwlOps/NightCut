@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/editor-core",
+    "crates/media-engine",
+    "crates/export-engine",
+]
+# apps/desktop/src-tauri is its own workspace (see its Cargo.toml) so the
+# lightweight core test suite never has to build Tauri/WebKit system deps.
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/TheOwlOps/NightCut"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
