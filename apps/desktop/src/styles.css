@@ -109,10 +109,14 @@ input, textarea, select {
 }
 .preview-video { width: 100%; height: 100%; object-fit: contain; }
 .preview-empty { color: var(--text-dim); font-size: 28px; letter-spacing: 0.2em; padding: 60px 30px; }
-.preview-text {
-  position: absolute; left: 0; right: 0; bottom: 12%; text-align: center;
-  color: #fff; font-weight: 700; text-shadow: 0 2px 6px #000, 0 0 2px #000;
+.preview-text-stack {
+  position: absolute; left: 0; right: 0; bottom: 10%;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
   pointer-events: none; padding: 0 12px;
+}
+.preview-text {
+  text-align: center;
+  color: #fff; font-weight: 700; text-shadow: 0 2px 6px #000, 0 0 2px #000;
 }
 .transport { display: flex; align-items: center; gap: 10px; }
 .play-btn { width: 42px; height: 42px; border-radius: 50%; font-size: 16px; }

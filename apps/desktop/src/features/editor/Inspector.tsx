@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useEditor } from "../../store/editor";
-import { EFFECT_LABELS, Effect, clipDuration } from "../../lib/project";
+import { EFFECT_LABELS, Effect, SPEED_CURVE_PRESETS, clipDuration } from "../../lib/project";
 
 const EFFECT_TYPES = Object.keys(EFFECT_LABELS) as Effect["type"][];
 
@@ -9,7 +9,7 @@ export default function Inspector() {
   const {
     project, selected, updateSelectedText, setCanvas, addEffect, removeEffect, updateEffect,
     setSelectedSpeed, setSelectedVolume, setSelectedTransitionDuration, removeSelectedTransition,
-    setSelectedTextStyle,
+    setSelectedTextStyle, setSpeedCurve, addKeyframeAtPlayhead, updateKeyframe, removeKeyframe,
   } = useEditor();
   const [newFx, setNewFx] = useState<Effect["type"]>("adjust");
   const clip = selected
@@ -70,9 +70,48 @@ export default function Inspector() {
                 </div>
               </div>
               <div className="field">
+                <span>Speed curve</span>
+                <div className="row">
+                  {SPEED_CURVE_PRESETS.map((preset) => (
+                    <button key={preset.name} className="chip" title={preset.name}
+                      onClick={() => setSpeedCurve(preset.points)}>
+                      {preset.name.split(" ")[0]} {preset.name.includes("slow") ? "🐢" : preset.name.includes("fast") ? "🐇" : preset.name.includes("down") ? "↘" : "↗"}
+                    </button>
+                  ))}
+                </div>
+                {clip.speedCurve ? (
+                  <div className="row">
+                    <span className="hint">Curve active: {clip.speedCurve.map((p) => `${Math.round(p.at * 100)}%→${p.speed}×`).join(" · ")}</span>
+                    <button onClick={() => setSpeedCurve(null)}>Clear</button>
+                  </div>
+                ) : (
+                  <p className="hint">Constant speed right now — or pick a CapCut-style curve preset.</p>
+                )}
+              </div>
+              <div className="field">
                 <span>Audio</span>
                 <Slider label="Volume" value={clip.volume} min={0} max={2} step={0.05}
                   onChange={setSelectedVolume} />
+              </div>
+              <div className="field">
+                <span>Keyframes ◆</span>
+                <button onClick={addKeyframeAtPlayhead}>◆ Add keyframe at playhead</button>
+                {(clip.keyframes ?? []).map((kf, i) => (
+                  <div key={i} className="effect-item">
+                    <div className="row">
+                      <strong>◆ {kf.at.toFixed(2)}s</strong>
+                      <span className="spacer" />
+                      <button onClick={() => removeKeyframe(i)}>✕</button>
+                    </div>
+                    <Slider label="Scale" value={kf.scale} min={1} max={3} step={0.05}
+                      onChange={(v) => updateKeyframe(i, { scale: v })} />
+                    <Slider label="Rotate" value={kf.rotation} min={-180} max={180} step={1}
+                      onChange={(v) => updateKeyframe(i, { rotation: v })} />
+                    <Slider label="Opacity" value={kf.opacity} min={0} max={1} step={0.05}
+                      onChange={(v) => updateKeyframe(i, { opacity: v })} />
+                  </div>
+                ))}
+                <p className="hint">Animate scale/rotation/opacity between keyframes — rendered at export, previewed live.</p>
               </div>
               <div className="field">
                 <span>Transition in</span>
@@ -206,6 +245,25 @@ function EffectControls({ effect, onChange }: { effect: Effect; onChange: (e: Ef
     case "fade_out":
       return <Slider label="Seconds" value={effect.duration} min={0} max={5} step={0.1}
         onChange={(v) => onChange({ ...effect, duration: v })} />;
+    case "chroma_key":
+      return (
+        <>
+          <label className="slider-row">
+            <span>Key color</span>
+            <input type="color" value={effect.color}
+              onChange={(e) => onChange({ ...effect, color: e.target.value })} />
+            <b>{effect.color}</b>
+          </label>
+          <Slider label="Similarity" value={effect.similarity} min={0} max={1} step={0.01}
+            onChange={(v) => onChange({ ...effect, similarity: v })} />
+          <Slider label="Blend" value={effect.blend} min={0} max={1} step={0.01}
+            onChange={(v) => onChange({ ...effect, blend: v })} />
+          <p className="hint">Keyed area becomes transparent over black at export.</p>
+        </>
+      );
+    case "denoise":
+      return <Slider label="Strength" value={effect.strength} min={0} max={1} step={0.05}
+        onChange={(v) => onChange({ ...effect, strength: v })} />;
     default:
       return null; // grayscale / mirror / invert are on-off effects
   }

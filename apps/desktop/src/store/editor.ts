@@ -2,13 +2,18 @@ import { create } from "zustand";
 import {
   Clip,
   Effect,
+  Keyframe,
   Project,
+  SpeedPoint,
+  clipDuration,
   clipEnd,
   defaultEffect,
   emptyProject,
+  interpKeyframes,
   newId,
   parseSrt,
   projectDuration,
+  sourceAtPlayed,
   splitClip,
 } from "../lib/project";
 
@@ -45,6 +50,12 @@ interface EditorState {
   setSelectedTransitionDuration: (duration: number) => void;
   removeSelectedTransition: () => void;
   setSelectedTextStyle: (patch: { fontSize?: number; textColor?: string }) => void;
+  setSpeedCurve: (points: SpeedPoint[] | null) => void;
+  addKeyframeAtPlayhead: () => void;
+  updateKeyframe: (index: number, patch: Partial<Keyframe>) => void;
+  removeKeyframe: (index: number) => void;
+  freezeAtPlayhead: () => void;
+  applyTemplate: (kind: "hook" | "intro" | "tutorial") => void;
   select: (sel: Selection | null) => void;
   setPlayhead: (t: number) => void;
   setPlaying: (b: boolean) => void;
@@ -321,6 +332,121 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!clip?.effects) return;
     clip.effects = clip.effects.map((fx, i) => (i === index ? effect : fx));
     set(withHistory(s, next));
+  },
+
+  setSpeedCurve: (points) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip) return;
+    if (points) clip.speedCurve = points;
+    else delete clip.speedCurve;
+    set(withHistory(s, next));
+  },
+
+  addKeyframeAtPlayhead: () => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip || clip.text !== undefined) return;
+    const local = Math.max(0, s.playhead - clip.timelineStart);
+    const current = interpKeyframes(clip, local);
+    const kf: Keyframe = { ...current, at: Math.round(local * 100) / 100 };
+    clip.keyframes = [...(clip.keyframes ?? []).filter((k) => Math.abs(k.at - kf.at) > 0.01), kf]
+      .sort((a, b) => a.at - b.at);
+    set(withHistory(s, next));
+  },
+
+  updateKeyframe: (index, patch) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip?.keyframes?.[index]) return;
+    clip.keyframes[index] = { ...clip.keyframes[index], ...patch };
+    clip.keyframes.sort((a, b) => a.at - b.at);
+    set(withHistory(s, next));
+  },
+
+  removeKeyframe: (index) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip?.keyframes) return;
+    clip.keyframes = clip.keyframes.filter((_, i) => i !== index);
+    set(withHistory(s, next));
+  },
+
+  freezeAtPlayhead: () => {
+    const s = get();
+    const track = s.project.tracks.find((t) => t.id === "track-video");
+    const clip = track?.clips.find(
+      (c) => s.playhead >= c.timelineStart && s.playhead < clipEnd(c) && c.freezeDuration === undefined,
+    );
+    if (!track || !clip) return;
+    const FREEZE_LEN = 2;
+    // Split at the playhead first (same semantics as the Split tool)…
+    let next = splitClip(s.project, track.id, clip.id, s.playhead) ?? structuredClone(s.project);
+    const t = next.tracks.find((x) => x.id === track.id)!;
+    // …then shift everything from the playhead onward to make room…
+    for (const c of t.clips) {
+      if (c.timelineStart >= s.playhead - 1e-9) c.timelineStart += FREEZE_LEN;
+    }
+    // …and insert the freeze clip holding the frame at the playhead.
+    const sourceTime = sourceAtPlayed(clip, s.playhead - clip.timelineStart);
+    const freeze: Clip = {
+      id: newId("freeze"),
+      source: clip.source,
+      inSec: Math.round(sourceTime * 1000) / 1000,
+      outSec: Math.round(sourceTime * 1000) / 1000,
+      timelineStart: s.playhead,
+      speed: 1,
+      volume: 0,
+      freezeDuration: FREEZE_LEN,
+    };
+    t.clips.push(freeze);
+    t.clips.sort((a, b) => a.timelineStart - b.timelineStart);
+    set({
+      ...withHistory(s, next),
+      selected: { trackId: track.id, clipId: freeze.id },
+    });
+  },
+
+  applyTemplate: (kind) => {
+    const s = get();
+    const next = structuredClone(s.project);
+    const textTrack = next.tracks.find((t) => t.id === "track-text")!;
+    const dur = projectDuration(next);
+    const addText = (text: string, start: number, len: number, fontSize: number, color: string) => {
+      textTrack.clips.push({
+        id: newId("text"), source: "", inSec: 0, outSec: len, timelineStart: start,
+        speed: 1, volume: 1, text, fontSize, textColor: color,
+      });
+    };
+    if (kind === "hook") {
+      next.canvas = { width: 1080, height: 1920, fps: 30 };
+      addText("STOP scrolling!", 0, 3, 110, "#ffe14d");
+      if (dur > 6) addText("Watch till the end →", Math.max(3, dur - 3), 3, 56, "#ffffff");
+    } else if (kind === "intro") {
+      addText("Your Channel", 0, 2.5, 110, "#ffffff");
+      addText("new video every week", 0, 3, 48, "#22d3ee");
+    } else {
+      addText("Step 1:", s.playhead, 3, 72, "#ffe14d");
+      addText("do this first", s.playhead, 3, 48, "#ffffff");
+    }
+    textTrack.clips.sort((a, b) => a.timelineStart - b.timelineStart);
+    set({ ...withHistory(s, next), project: next });
   },
 
   setCanvas: (preset) => {

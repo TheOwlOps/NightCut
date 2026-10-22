@@ -72,6 +72,41 @@ pub enum Effect {
     /// Play the clip backwards (rendered at export; the preview cannot
     /// reverse an HTML5 video element).
     Reverse,
+    /// Green-screen keying: `color` is `#RRGGBB`, similarity/blend 0..1.
+    /// The keyed area becomes transparent, composited over black at export.
+    ChromaKey { color: String, similarity: f64, blend: f64 },
+    /// Audio noise reduction (FFmpeg afftdn), strength 0..1.
+    Denoise { strength: f64 },
+}
+
+/// One point of a speed curve (CapCut "Curve" speed). `at` is a fraction
+/// 0..1 of the clip's source window; the segment starting at this point
+/// plays at `speed`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpeedPoint {
+    pub at: f64,
+    pub speed: f64,
+}
+
+/// A transform keyframe at `at` seconds into the clip's *played* duration.
+/// Values interpolate linearly between keyframes at export (zoompan /
+/// rotate / alpha expressions) and in the preview (CSS transforms).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Keyframe {
+    pub at: f64,
+    pub scale: f64,
+    pub pos_x: f64,
+    pub pos_y: f64,
+    /// Degrees, clockwise.
+    pub rotation: f64,
+    pub opacity: f64,
+}
+
+impl Default for Keyframe {
+    fn default() -> Self {
+        Self { at: 0.0, scale: 1.0, pos_x: 0.0, pos_y: 0.0, rotation: 0.0, opacity: 1.0 }
+    }
 }
 
 /// A transition *into* a clip from the previous clip on the same track
@@ -117,6 +152,16 @@ pub struct Clip {
     /// Text color for text clips, `#RRGGBB`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_color: Option<String>,
+    /// Speed curve; when present it replaces the constant `speed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_curve: Option<Vec<SpeedPoint>>,
+    /// Transform keyframes (video clips), sorted by `at` when used.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyframes: Vec<Keyframe>,
+    /// Freeze-frame clip: hold the source frame at `in_sec` for this many
+    /// seconds (the clip's played duration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeze_duration: Option<f64>,
 }
 
 fn default_speed() -> f64 { 1.0 }
@@ -129,6 +174,7 @@ impl Clip {
             in_sec, out_sec, timeline_start,
             speed: 1.0, volume: 1.0, text: None, font_size: None,
             effects: Vec::new(), transition_in: None, text_color: None,
+            speed_curve: None, keyframes: Vec::new(), freeze_duration: None,
         }
     }
     pub fn text_clip(id: impl Into<String>, text: impl Into<String>, timeline_start: f64, duration: f64) -> Self {
@@ -138,8 +184,29 @@ impl Clip {
         c
     }
     /// Played duration on the timeline after trimming and speed.
+    /// A freeze clip lasts `freeze_duration`; a speed curve lasts the sum
+    /// of its segments (source length / segment speed).
     pub fn duration(&self) -> f64 {
-        ((self.out_sec - self.in_sec) / self.speed.max(0.01)).max(0.0)
+        if let Some(d) = self.freeze_duration {
+            return d.max(0.0);
+        }
+        let source_len = (self.out_sec - self.in_sec).max(0.0);
+        if let Some(curve) = &self.speed_curve {
+            if !curve.is_empty() {
+                let mut points = curve.clone();
+                points.sort_by(|a, b| a.at.total_cmp(&b.at));
+                let mut total = 0.0;
+                for (i, p) in points.iter().enumerate() {
+                    let start = p.at.clamp(0.0, 1.0);
+                    let end = points.get(i + 1).map(|n| n.at.clamp(0.0, 1.0)).unwrap_or(1.0);
+                    if end > start {
+                        total += source_len * (end - start) / p.speed.max(0.01);
+                    }
+                }
+                return total;
+            }
+        }
+        (source_len / self.speed.max(0.01)).max(0.0)
     }
     pub fn timeline_end(&self) -> f64 {
         self.timeline_start + self.duration()
@@ -201,7 +268,8 @@ impl Project {
     }
 
     pub fn add_clip(&mut self, track_id: &str, clip: Clip) -> Result<()> {
-        if clip.out_sec <= clip.in_sec && clip.text.is_none() {
+        // Zero-length source windows are only valid for freeze-frame clips.
+        if clip.out_sec <= clip.in_sec && clip.text.is_none() && clip.freeze_duration.is_none() {
             return Err(EditError::InvalidRange(clip.in_sec, clip.out_sec));
         }
         let track = self.track_mut(track_id)?;
@@ -255,9 +323,18 @@ impl Project {
         right.id = new_id.into();
         right.in_sec = split_source;
         right.timeline_start = at_timeline;
+        // A split invalidates curve/freeze semantics (their fractions and
+        // held frames refer to the whole clip) — both halves fall back to
+        // the clip's constant speed.
+        right.speed_curve = None;
+        right.freeze_duration = None;
+        right.keyframes.clear();
 
         let left = &mut track.clips[idx];
         left.out_sec = split_source;
+        left.speed_curve = None;
+        left.freeze_duration = None;
+        left.keyframes.clear();
 
         let right_id = right.id.clone();
         track.clips.insert(idx + 1, right);
@@ -393,6 +470,24 @@ mod tests {
         let mut p = back;
         p.split_clip("track-video", "c1", 4.0, "c2").unwrap();
         assert_eq!(p.tracks[0].clips[1].effects.len(), 3);
+    }
+
+    #[test]
+    fn speed_curve_duration_is_segment_sum() {
+        let mut c = Clip::new("c1", "a.mp4", 0.0, 10.0, 0.0);
+        c.speed_curve = Some(vec![
+            SpeedPoint { at: 0.0, speed: 1.0 },
+            SpeedPoint { at: 0.5, speed: 2.0 },
+        ]);
+        // 5s at 1x + 5s at 2x = 5 + 2.5
+        assert_eq!(c.duration(), 7.5);
+    }
+
+    #[test]
+    fn freeze_duration_wins() {
+        let mut c = Clip::new("c1", "a.mp4", 3.0, 3.0, 0.0);
+        c.freeze_duration = Some(2.0);
+        assert_eq!(c.duration(), 2.0);
     }
 
     #[test]

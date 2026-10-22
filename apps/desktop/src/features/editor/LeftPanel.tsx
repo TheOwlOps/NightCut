@@ -10,7 +10,7 @@ import {
   newId,
 } from "../../lib/project";
 
-type Tab = "media" | "text" | "effects" | "filters" | "transitions" | "audio" | "captions";
+type Tab = "media" | "text" | "effects" | "filters" | "transitions" | "audio" | "captions" | "templates";
 
 const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "media", icon: "🎞", label: "Media" },
@@ -20,6 +20,7 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "transitions", icon: "⇄", label: "Transitions" },
   { id: "audio", icon: "🎵", label: "Audio" },
   { id: "captions", icon: "CC", label: "Captions" },
+  { id: "templates", icon: "▦", label: "Templates" },
 ];
 
 /**
@@ -50,7 +51,32 @@ export default function LeftPanel() {
         {tab === "transitions" && <TransitionsPanel />}
         {tab === "audio" && <AudioPanel />}
         {tab === "captions" && <CaptionsPanel />}
+        {tab === "templates" && <TemplatesPanel />}
       </div>
+    </div>
+  );
+}
+
+function TemplatesPanel() {
+  const applyTemplate = useEditor((s) => s.applyTemplate);
+  const templates = [
+    { kind: "hook" as const, name: "TikTok Hook", desc: "9:16 canvas, big hook title at 0s, watch-till-end card at the end" },
+    { kind: "intro" as const, name: "Channel Intro", desc: "Channel name title + weekly subtitle cards at the start" },
+    { kind: "tutorial" as const, name: "Tutorial Step", desc: "“Step 1:” label + hint text at the playhead" },
+  ];
+  return (
+    <div className="dock-panel">
+      <div className="panel-title">Templates</div>
+      <p className="hint">
+        NightCut templates are local project recipes (not CapCut's cloud library) — they insert
+        real, editable clips you can restyle.
+      </p>
+      {templates.map((t) => (
+        <button key={t.kind} className="preset-card" onClick={() => applyTemplate(t.kind)}>
+          <strong>{t.name}</strong>
+          <span className="hint">{t.desc}</span>
+        </button>
+      ))}
     </div>
   );
 }

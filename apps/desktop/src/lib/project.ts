@@ -16,7 +16,9 @@ export type Effect =
   | { type: "invert" }
   | { type: "fade_in"; duration: number }
   | { type: "fade_out"; duration: number }
-  | { type: "reverse" };
+  | { type: "reverse" }
+  | { type: "chroma_key"; color: string; similarity: number; blend: number }
+  | { type: "denoise"; strength: number };
 
 export const EFFECT_LABELS: Record<Effect["type"], string> = {
   adjust: "Brightness / Contrast",
@@ -31,7 +33,115 @@ export const EFFECT_LABELS: Record<Effect["type"], string> = {
   fade_in: "Fade in",
   fade_out: "Fade out",
   reverse: "Reverse (export only)",
+  chroma_key: "Chroma key (green screen)",
+  denoise: "Noise reduction (audio)",
 };
+
+export interface SpeedPoint {
+  at: number; // fraction 0..1 of the source window
+  speed: number;
+}
+
+export interface Keyframe {
+  at: number; // seconds into the clip's played duration
+  scale: number;
+  posX: number;
+  posY: number;
+  rotation: number; // degrees
+  opacity: number;
+}
+
+export const SPEED_CURVE_PRESETS: { name: string; points: SpeedPoint[] }[] = [
+  { name: "Ramp up", points: [{ at: 0, speed: 0.5 }, { at: 0.5, speed: 1 }, { at: 0.8, speed: 2 }] },
+  { name: "Ramp down", points: [{ at: 0, speed: 2 }, { at: 0.5, speed: 1 }, { at: 0.8, speed: 0.5 }] },
+  { name: "Hero moment (slow middle)", points: [{ at: 0, speed: 1.5 }, { at: 0.35, speed: 0.4 }, { at: 0.65, speed: 1.5 }] },
+  { name: "Montage (fast middle)", points: [{ at: 0, speed: 0.8 }, { at: 0.3, speed: 3 }, { at: 0.7, speed: 0.8 }] },
+];
+
+/** Played duration of a clip with a speed curve: sum of segment durations. */
+export function curveDuration(clip: Clip): number | null {
+  if (!clip.speedCurve || clip.speedCurve.length === 0) return null;
+  const srcLen = Math.max(0, clip.outSec - clip.inSec);
+  const pts = [...clip.speedCurve].sort((a, b) => a.at - b.at);
+  let total = 0;
+  pts.forEach((p, i) => {
+    const start = Math.min(1, Math.max(0, p.at));
+    const end = i + 1 < pts.length ? Math.min(1, Math.max(0, pts[i + 1].at)) : 1;
+    if (end > start) total += (srcLen * (end - start)) / Math.max(0.01, p.speed);
+  });
+  return total;
+}
+
+/** Map played (timeline-local) time to source time for any clip. */
+export function sourceAtPlayed(clip: Clip, played: number): number {
+  if (clip.freezeDuration !== undefined) return clip.inSec;
+  if (!clip.speedCurve || clip.speedCurve.length === 0) {
+    return clip.inSec + played * clip.speed;
+  }
+  const srcLen = clip.outSec - clip.inSec;
+  const pts = [...clip.speedCurve].sort((a, b) => a.at - b.at);
+  let acc = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const start = Math.min(1, Math.max(0, pts[i].at));
+    const end = i + 1 < pts.length ? Math.min(1, Math.max(0, pts[i + 1].at)) : 1;
+    if (end <= start) continue;
+    const segPlayed = (srcLen * (end - start)) / Math.max(0.01, pts[i].speed);
+    if (played <= acc + segPlayed) {
+      return clip.inSec + srcLen * start + (played - acc) * pts[i].speed;
+    }
+    acc += segPlayed;
+  }
+  return clip.outSec;
+}
+
+/** Inverse of sourceAtPlayed: played local time for a source time. */
+export function playedAtSource(clip: Clip, source: number): number {
+  if (clip.freezeDuration !== undefined) return 0;
+  if (!clip.speedCurve || clip.speedCurve.length === 0) {
+    return (source - clip.inSec) / Math.max(0.01, clip.speed);
+  }
+  const srcLen = clip.outSec - clip.inSec;
+  const pts = [...clip.speedCurve].sort((a, b) => a.at - b.at);
+  let acc = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const start = Math.min(1, Math.max(0, pts[i].at));
+    const end = i + 1 < pts.length ? Math.min(1, Math.max(0, pts[i + 1].at)) : 1;
+    if (end <= start) continue;
+    const segSrcStart = clip.inSec + srcLen * start;
+    const segSrcEnd = clip.inSec + srcLen * end;
+    if (source <= segSrcEnd) {
+      return acc + (source - segSrcStart) / Math.max(0.01, pts[i].speed);
+    }
+    acc += (srcLen * (end - start)) / Math.max(0.01, pts[i].speed);
+  }
+  return acc;
+}
+
+/** Interpolated keyframe transform at a played local time (preview + UI). */
+export function interpKeyframes(clip: Clip, played: number): Keyframe {
+  const base: Keyframe = { at: played, scale: 1, posX: 0, posY: 0, rotation: 0, opacity: 1 };
+  const kfs = [...(clip.keyframes ?? [])].sort((a, b) => a.at - b.at);
+  if (kfs.length === 0) return base;
+  if (played <= kfs[0].at) return { ...kfs[0], at: played };
+  if (played >= kfs[kfs.length - 1].at) return { ...kfs[kfs.length - 1], at: played };
+  for (let i = 0; i + 1 < kfs.length; i++) {
+    const a = kfs[i];
+    const b = kfs[i + 1];
+    if (played >= a.at && played <= b.at) {
+      const t = b.at === a.at ? 0 : (played - a.at) / (b.at - a.at);
+      const lerp = (x: number, y: number) => x + (y - x) * t;
+      return {
+        at: played,
+        scale: lerp(a.scale, b.scale),
+        posX: lerp(a.posX, b.posX),
+        posY: lerp(a.posY, b.posY),
+        rotation: lerp(a.rotation, b.rotation),
+        opacity: lerp(a.opacity, b.opacity),
+      };
+    }
+  }
+  return base;
+}
 
 /** Transition presets — names are FFmpeg xfade transitions (CapCut-style). */
 export const TRANSITION_PRESETS: { kind: string; label: string }[] = [
@@ -101,6 +211,8 @@ export function defaultEffect(type: Effect["type"]): Effect {
     case "temperature": return { type, kelvin: 5200 };
     case "fade_in": return { type, duration: 0.5 };
     case "fade_out": return { type, duration: 0.5 };
+    case "chroma_key": return { type, color: "#00ff00", similarity: 0.3, blend: 0.1 };
+    case "denoise": return { type, strength: 0.5 };
     default: return { type } as Effect;
   }
 }
@@ -170,6 +282,10 @@ export function effectFfmpegFilters(fx: Effect, clipDur: number): { video: strin
     case "mirror": return { video: ["hflip"], audio: [] };
     case "invert": return { video: ["negate"], audio: [] };
     case "reverse": return { video: ["reverse"], audio: ["areverse"] };
+    case "chroma_key":
+      return { video: [`chromakey=color=0x${fx.color.replace("#", "")}:similarity=${fx.similarity.toFixed(3)}:blend=${fx.blend.toFixed(3)}`], audio: [] };
+    case "denoise":
+      return { video: [], audio: [`afftdn=nr=${(1 + Math.min(1, Math.max(0, fx.strength)) * 40).toFixed(1)}`] };
     case "fade_in":
       return { video: [`fade=t=in:st=0.000:d=${fx.duration.toFixed(3)}`], audio: [`afade=t=in:st=0.000:d=${fx.duration.toFixed(3)}`] };
     case "fade_out": {
@@ -196,6 +312,9 @@ export interface Clip {
   textColor?: string;
   effects?: Effect[];
   transitionIn?: { kind: string; duration: number };
+  speedCurve?: SpeedPoint[];
+  keyframes?: Keyframe[];
+  freezeDuration?: number;
 }
 
 export interface Track {
@@ -210,8 +329,10 @@ export interface Project {
   tracks: Track[];
 }
 
-export const clipDuration = (c: Clip) =>
-  Math.max(0, (c.outSec - c.inSec) / Math.max(0.01, c.speed));
+export const clipDuration = (c: Clip) => {
+  if (c.freezeDuration !== undefined) return Math.max(0, c.freezeDuration);
+  return curveDuration(c) ?? Math.max(0, (c.outSec - c.inSec) / Math.max(0.01, c.speed));
+};
 export const clipEnd = (c: Clip) => c.timelineStart + clipDuration(c);
 
 export function projectDuration(p: Project): number {
@@ -239,12 +360,20 @@ export function splitClip(p: Project, trackId: string, clipId: string, at: numbe
   const track = p.tracks.find((t) => t.id === trackId);
   const clip = track?.clips.find((c) => c.id === clipId);
   if (!track || !clip || at <= clip.timelineStart || at >= clipEnd(clip)) return null;
-  const splitSource = clip.inSec + (at - clip.timelineStart) * clip.speed;
-  const right: Clip = { ...clip, id: newId("clip"), inSec: splitSource, timelineStart: at };
+  const splitSource = sourceAtPlayed(clip, at - clip.timelineStart);
+  // Splitting invalidates curve/freeze/keyframe semantics (they refer to
+  // the whole clip) — both halves fall back to constant speed, as in Rust.
+  const right: Clip = {
+    ...clip, id: newId("clip"), inSec: splitSource, timelineStart: at,
+    speedCurve: undefined, freezeDuration: undefined, keyframes: undefined,
+  };
   const next = structuredClone(p);
   const t = next.tracks.find((x) => x.id === trackId)!;
   const idx = t.clips.findIndex((c) => c.id === clipId);
-  t.clips[idx] = { ...t.clips[idx], outSec: splitSource };
+  t.clips[idx] = {
+    ...t.clips[idx], outSec: splitSource,
+    speedCurve: undefined, freezeDuration: undefined, keyframes: undefined,
+  };
   t.clips.splice(idx + 1, 0, right);
   return next;
 }
@@ -272,6 +401,9 @@ export function toRustJson(p: Project): string {
           ...(c.effects && c.effects.length > 0 ? { effects: c.effects } : {}),
           ...(c.transitionIn ? { transitionIn: c.transitionIn } : {}),
           ...(c.textColor ? { textColor: c.textColor } : {}),
+          ...(c.speedCurve ? { speedCurve: c.speedCurve } : {}),
+          ...(c.keyframes && c.keyframes.length > 0 ? { keyframes: c.keyframes } : {}),
+          ...(c.freezeDuration !== undefined ? { freezeDuration: c.freezeDuration } : {}),
         })),
       })),
     },
@@ -285,6 +417,44 @@ const round = (n: number) => Math.round(n * 1000) / 1000;
 /** Build the FFmpeg command for a project — mirrors export-engine (Rust).
  * In the desktop (Tauri) build the same graph runs natively; in a plain
  * browser this command is what the Export panel shows/copies. */
+function atempoChain(speed: number): string[] {
+  const out: string[] = [];
+  let s = Math.max(0.01, speed);
+  while (s > 2) { out.push("atempo=2.000"); s /= 2; }
+  while (s < 0.5) { out.push("atempo=0.500"); s /= 0.5; }
+  out.push(`atempo=${s.toFixed(3)}`);
+  return out;
+}
+
+function piecewise(points: [number, number][], varName: string): string {
+  if (points.length === 0) return "0";
+  if (points.length === 1) return points[0][1].toFixed(4);
+  const [t0, v0] = points[0];
+  const [t1, v1] = points[1];
+  const seg = t1 === t0 ? v1.toFixed(4) : `${v0.toFixed(4)}+(${v1.toFixed(4)}-${v0.toFixed(4)})*(${varName}-${t0.toFixed(3)})/${(t1 - t0).toFixed(3)}`;
+  if (points.length === 2) return `if(lt(${varName},${t1.toFixed(3)}),${seg},${v1.toFixed(4)})`;
+  return `if(lt(${varName},${t1.toFixed(3)}),${seg},${piecewise(points.slice(1), varName)})`;
+}
+
+function keyframeFiltersTs(c: Clip, w: number, h: number, fps: number): string[] {
+  const kfs = [...(c.keyframes ?? [])].sort((a, b) => a.at - b.at);
+  if (kfs.length === 0) return [];
+  const out: string[] = [];
+  const scaleVaries = kfs.some((k) => Math.abs(k.scale - kfs[0].scale) > 0.001) || Math.abs(kfs[0].scale - 1) > 0.001;
+  const posVaries = kfs.some((k) => Math.abs(k.posX) > 0.001 || Math.abs(k.posY) > 0.001);
+  if (scaleVaries || posVaries) {
+    const z = piecewise(kfs.map((k) => [k.at * fps, Math.max(1, k.scale)] as [number, number]), "on");
+    const x = piecewise(kfs.map((k) => [k.at * fps, k.posX] as [number, number]), "on");
+    const y = piecewise(kfs.map((k) => [k.at * fps, k.posY] as [number, number]), "on");
+    out.push(`zoompan=z='${z}':x='(iw-iw/zoom)/2+(${x})*(iw/zoom)':y='(ih-ih/zoom)/2+(${y})*(ih/zoom)':d=1:s=${w}x${h}:fps=${fps}`);
+  }
+  if (kfs.some((k) => Math.abs(k.rotation) > 0.01)) {
+    const r = piecewise(kfs.map((k) => [k.at, (k.rotation * Math.PI) / 180] as [number, number]), "t");
+    out.push(`rotate=a='${r}':ow=iw:oh=ih:c=black`);
+  }
+  return out;
+}
+
 export function buildFfmpegCommand(p: Project, output = "nightcut-export.mp4"): string {
   const video = [...(p.tracks.find((t) => t.kind === "video")?.clips ?? [])]
     .filter((c) => c.source)
@@ -295,12 +465,89 @@ export function buildFfmpegCommand(p: Project, output = "nightcut-export.mp4"): 
   const chains: string[] = [];
   video.forEach((c, i) => {
     const dur = clipDuration(c);
+    const hasChroma = (c.effects ?? []).some((fx) => fx.type === "chroma_key");
+    const needsAlpha = hasChroma || (c.keyframes ?? []).some((k) => k.opacity < 0.999);
+    const baseFmt = hasChroma ? "format=rgba" : "format=yuv420p";
+    const scalePad = [
+      `scale=${w}:${h}:force_original_aspect_ratio=decrease`,
+      `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`,
+      `fps=${fps}`,
+      "setsar=1",
+      baseFmt,
+    ];
+    // step 1: base streams [vb{i}] / [ab{i}]
+    if (c.freezeDuration !== undefined) {
+      const fd = c.freezeDuration;
+      chains.push(
+        `[${i}:v]${[`trim=start=${c.inSec.toFixed(3)}:end=${(c.inSec + 0.1).toFixed(3)}`, "setpts=PTS-STARTPTS", ...scalePad, `tpad=stop_mode=clone:stop_duration=${fd.toFixed(3)}`, `trim=duration=${fd.toFixed(3)}`, "setpts=PTS-STARTPTS"].join(",")}[vb${i}]`,
+        `anullsrc=r=48000:cl=stereo,atrim=duration=${fd.toFixed(3)}[ab${i}]`,
+      );
+    } else if (c.speedCurve && c.speedCurve.length > 0) {
+      const pts = [...c.speedCurve].sort((a, b) => a.at - b.at);
+      const srcLen = Math.max(0, c.outSec - c.inSec);
+      const segs = pts
+        .map((pt, j) => ({
+          start: Math.min(1, Math.max(0, pt.at)),
+          end: j + 1 < pts.length ? Math.min(1, Math.max(0, pts[j + 1].at)) : 1,
+          speed: Math.max(0.01, pt.speed),
+        }))
+        .filter((s) => s.end > s.start);
+      segs.forEach((s, j) => {
+        const sIn = c.inSec + srcLen * s.start;
+        const sOut = c.inSec + srcLen * s.end;
+        chains.push(
+          `[${i}:v]${[`trim=start=${sIn.toFixed(3)}:end=${sOut.toFixed(3)}`, `setpts=(PTS-STARTPTS)/${s.speed.toFixed(3)}`, ...scalePad].join(",")}[vb${i}s${j}]`,
+          `[${i}:a]${[`atrim=start=${sIn.toFixed(3)}:end=${sOut.toFixed(3)}`, "asetpts=PTS-STARTPTS", ...atempoChain(s.speed), "aresample=48000", `volume=${c.volume.toFixed(2)}`].join(",")}[ab${i}s${j}]`,
+        );
+      });
+      chains.push(
+        `${segs.map((_, j) => `[vb${i}s${j}]`).join("")}concat=n=${segs.length}:v=1:a=0[vb${i}]`,
+        `${segs.map((_, j) => `[ab${i}s${j}]`).join("")}concat=n=${segs.length}:v=0:a=1[ab${i}]`,
+      );
+    } else {
+      chains.push(
+        `[${i}:v]${[`trim=start=${c.inSec.toFixed(3)}:end=${c.outSec.toFixed(3)}`, `setpts=(PTS-STARTPTS)/${c.speed}`, ...scalePad].join(",")}[vb${i}]`,
+        `[${i}:a]${[`atrim=start=${c.inSec.toFixed(3)}:end=${c.outSec.toFixed(3)}`, "asetpts=PTS-STARTPTS", `atempo=${Math.min(2, Math.max(0.5, c.speed))}`, "aresample=48000", `volume=${c.volume.toFixed(2)}`].join(",")}[ab${i}]`,
+      );
+    }
+    // step 2: keyframes + video effects -> [v{i}]
+    let vlabel = `vb${i}`;
+    keyframeFiltersTs(c, w, h, fps).forEach((f, step) => {
+      const next = `vk${i}_${step}`;
+      chains.push(`[${vlabel}]${f}[${next}]`);
+      vlabel = next;
+    });
     const vFx = (c.effects ?? []).flatMap((fx) => effectFfmpegFilters(fx, dur).video);
+    if (vFx.length > 0) {
+      chains.push(`[${vlabel}]${vFx.join(",")}[ve${i}]`);
+      vlabel = `ve${i}`;
+    }
+    if (needsAlpha) {
+      const kfs = [...(c.keyframes ?? [])].sort((a, b) => a.at - b.at);
+      if (hasChroma) {
+        const minOp = kfs.length > 0 ? Math.min(...kfs.map((k) => k.opacity)) : 1;
+        if (minOp < 0.999) {
+          chains.push(`[${vlabel}]colorchannelmixer=aa=${minOp.toFixed(3)}[va${i}]`);
+          vlabel = `va${i}`;
+        }
+      } else if (kfs.some((k) => k.opacity < 0.999)) {
+        const op = piecewise(kfs.map((k) => [k.at, Math.min(1, Math.max(0, k.opacity))] as [number, number]), "T");
+        chains.push(
+          `color=c=black:s=${w}x${h}:r=${fps}:d=${dur.toFixed(3)},format=gray,geq=lum='255*(${op})'[vam${i}]`,
+          `[${vlabel}][vam${i}]alphamerge[va${i}]`,
+        );
+        vlabel = `va${i}`;
+      }
+      chains.push(
+        `color=c=black:s=${w}x${h}:r=${fps}:d=${dur.toFixed(3)}[vbg${i}]`,
+        `[vbg${i}][${vlabel}]overlay=0:0,format=yuv420p[v${i}]`,
+      );
+    } else {
+      chains.push(`[${vlabel}]format=yuv420p[v${i}]`);
+    }
+    // step 3: audio effects -> [a{i}]
     const aFx = (c.effects ?? []).flatMap((fx) => effectFfmpegFilters(fx, dur).audio);
-    chains.push(
-      `[${i}:v]${[`trim=start=${c.inSec.toFixed(3)}:end=${c.outSec.toFixed(3)}`, `setpts=(PTS-STARTPTS)/${c.speed}`, `scale=${w}:${h}:force_original_aspect_ratio=decrease`, `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`, `fps=${fps}`, "setsar=1", "format=yuv420p", ...vFx].join(",")}[v${i}]`,
-      `[${i}:a]${[`atrim=start=${c.inSec.toFixed(3)}:end=${c.outSec.toFixed(3)}`, "asetpts=PTS-STARTPTS", `atempo=${Math.min(2, Math.max(0.5, c.speed))}`, "aresample=48000", `volume=${c.volume.toFixed(2)}`, ...aFx].join(",")}[a${i}]`,
-    );
+    chains.push(aFx.length > 0 ? `[ab${i}]${aFx.join(",")}[a${i}]` : `[ab${i}]anull[a${i}]`);
   });
   // Merge in order: xfade where a clip has a transition, concat otherwise.
   let vcur = "v0";

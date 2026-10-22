@@ -77,6 +77,9 @@ export default function Timeline() {
         <button onClick={() => state.addTextClip("Your text")} title="Add a text clip at the playhead">
           T+ Text
         </button>
+        <button onClick={state.freezeAtPlayhead} title="Freeze the frame at the playhead for 2s (CapCut Freeze)">
+          ❄ Freeze
+        </button>
         <button
           className={snap ? "chip active" : "chip"}
           onClick={() => setSnap(!snap)}

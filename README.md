@@ -45,6 +45,8 @@ your machine, and stays small:
       transitions between clips via FFmpeg xfade (12 presets), speed + volume
       per clip, text style presets + colors, .srt caption import, filter
       presets, reverse effect, timeline magnet snapping
+- [x] Wave 3: speed curve presets, keyframe animation (scale/rotate/opacity),
+      freeze frame, chroma key (green screen), audio denoise, local templates
 - [ ] Phase 1 leftovers: music mixing polish in UI
 - [ ] Phase 2 (the "smooth like the big editors" phase): proxy cache,
       thumbnail/waveform rendering on the timeline, pre-render around playhead

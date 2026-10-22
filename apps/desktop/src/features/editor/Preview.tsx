@@ -1,6 +1,9 @@
 import { useEffect, useRef } from "react";
 import { useEditor } from "../../store/editor";
-import { clipEnd, cssFilterFor, fadeOpacity, projectDuration } from "../../lib/project";
+import {
+  clipEnd, cssFilterFor, fadeOpacity, interpKeyframes, playedAtSource, projectDuration,
+  sourceAtPlayed,
+} from "../../lib/project";
 
 /**
  * Center preview. Phase 0 plays the active video clip through the WebView's
@@ -21,11 +24,20 @@ export default function Preview() {
     ?.clips.filter((c) => playhead >= c.timelineStart && playhead < clipEnd(c));
 
   // Keep the <video> element in sync with the timeline playhead.
+  // sourceAtPlayed handles constant speed, speed curves and freeze frames.
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !active) return;
-    const target = active.inSec + (playhead - active.timelineStart) * active.speed;
+    const local = playhead - active.timelineStart;
+    const target = sourceAtPlayed(active, local);
     if (Math.abs(v.currentTime - target) > 0.35) v.currentTime = target;
+    // Approximate the curve's current speed with the element's playbackRate.
+    if (active.speedCurve && active.speedCurve.length > 0) {
+      const ahead = sourceAtPlayed(active, local + 0.1) - target;
+      v.playbackRate = Math.min(4, Math.max(0.25, ahead / 0.1));
+    } else {
+      v.playbackRate = active.speed;
+    }
     if (playing && v.paused) void v.play().catch(() => undefined);
     if (!playing && !v.paused) v.pause();
   }, [playhead, playing, active]);
@@ -44,16 +56,30 @@ export default function Preview() {
             className="preview-video"
             style={
               active
-                ? {
-                    ...cssFilterFor(active),
-                    opacity: fadeOpacity(active, playhead - active.timelineStart),
-                  }
+                ? (() => {
+                    const local = playhead - active.timelineStart;
+                    const fxCss = cssFilterFor(active);
+                    const kf = interpKeyframes(active, local);
+                    const transform = [
+                      fxCss.transform,
+                      `scale(${kf.scale})`,
+                      `translate(${kf.posX * 100}%, ${kf.posY * 100}%)`,
+                      `rotate(${kf.rotation}deg)`,
+                    ]
+                      .filter(Boolean)
+                      .join(" ");
+                    return {
+                      filter: fxCss.filter,
+                      transform,
+                      opacity: fadeOpacity(active, local) * kf.opacity,
+                    };
+                  })()
                 : undefined
             }
             playsInline
             onTimeUpdate={(e) => {
               if (!active) return;
-              const local = active.timelineStart + (e.currentTarget.currentTime - active.inSec) / active.speed;
+              const local = active.timelineStart + playedAtSource(active, e.currentTarget.currentTime);
               if (Math.abs(local - playhead) > 0.05) setPlayhead(local);
             }}
             onEnded={() => setPlaying(false)}
@@ -61,15 +87,19 @@ export default function Preview() {
         ) : (
           <div className="preview-empty">NightCut</div>
         )}
-        {activeText?.map((c) => (
-          <div
-            key={c.id}
-            className="preview-text"
-            style={{ fontSize: (c.fontSize ?? 64) / 16, color: c.textColor ?? "#ffffff" }}
-          >
-            {c.text}
+        {activeText && activeText.length > 0 && (
+          <div className="preview-text-stack">
+            {activeText.map((c) => (
+              <div
+                key={c.id}
+                className="preview-text"
+                style={{ fontSize: (c.fontSize ?? 64) / 16, color: c.textColor ?? "#ffffff" }}
+              >
+                {c.text}
+              </div>
+            ))}
           </div>
-        ))}
+        )}
       </div>
       <div className="transport">
         <button onClick={() => setPlayhead(0)} title="Back to start">⏮</button>
