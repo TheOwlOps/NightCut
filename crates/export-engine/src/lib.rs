@@ -119,10 +119,11 @@ pub fn effect_video_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
             let st = (clip_duration - duration).max(0.0);
             vec![format!("fade=t=out:st={st:.3}:d={:.3}", duration.max(0.0))]
         }
+        Effect::Reverse => vec!["reverse".to_string()],
     }
 }
 
-/// Translate one effect into FFmpeg *audio* filters (only fades apply).
+/// Translate one effect into FFmpeg *audio* filters (fades + reverse apply).
 pub fn effect_audio_filters(effect: &Effect, clip_duration: f64) -> Vec<String> {
     match *effect {
         Effect::FadeIn { duration } => {
@@ -132,6 +133,7 @@ pub fn effect_audio_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
             let st = (clip_duration - duration).max(0.0);
             vec![format!("afade=t=out:st={st:.3}:d={:.3}", duration.max(0.0))]
         }
+        Effect::Reverse => vec!["areverse".to_string()],
         _ => Vec::new(),
     }
 }
@@ -193,6 +195,7 @@ pub fn build_ffmpeg_args(
             format!("pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"),
             format!("fps={fps}"),
             "setsar=1".to_string(),
+            "format=yuv420p".to_string(),
         ];
         for fx in &clip.effects {
             vchain.extend(effect_video_filters(fx, dur));
@@ -204,28 +207,65 @@ pub fn build_ffmpeg_args(
             "asetpts=PTS-STARTPTS".to_string(),
             format!("atempo={:.3}", clip.speed.clamp(0.5, 2.0)),
             "aresample=48000".to_string(),
+            format!("volume={:.2}", clip.volume.clamp(0.0, 2.0)),
         ];
         for fx in &clip.effects {
             achain.extend(effect_audio_filters(fx, dur));
         }
         filters.push(format!("[{i}:a]{}[a{i}]", achain.join(",")));
     }
-    let concat_inputs: String = (0..video_clips.len()).map(|i| format!("[v{i}][a{i}]")).collect();
-    filters.push(format!("{concat_inputs}concat=n={}:v=1:a=1[vcat][acat]", video_clips.len()));
+    // Merge clips in timeline order: a clip with `transition_in` is blended
+    // into the running result with xfade/acrossfade; otherwise it is
+    // concatenated. This replaces a single concat=n chain.
+    let mut vcur = "v0".to_string();
+    let mut acur = "a0".to_string();
+    let mut acc_duration = video_clips[0].duration();
+    for (i, clip) in video_clips.iter().enumerate().skip(1) {
+        let dur = clip.duration();
+        let transition = clip.transition_in.as_ref().filter(|t| {
+            t.duration > 0.0 && t.duration < acc_duration && t.duration < dur
+        });
+        if let Some(t) = transition {
+            let offset = acc_duration - t.duration;
+            filters.push(format!(
+                "[{vcur}][v{i}]xfade=transition={}:duration={:.3}:offset={:.3}[vx{i}]",
+                t.kind, t.duration, offset
+            ));
+            filters.push(format!("[{acur}][a{i}]acrossfade=d={:.3}[ax{i}]", t.duration));
+            vcur = format!("vx{i}");
+            acur = format!("ax{i}");
+            acc_duration += dur - t.duration;
+        } else {
+            filters.push(format!(
+                "[{vcur}][{acur}][v{i}][a{i}]concat=n=2:v=1:a=1[vc{i}][ac{i}]"
+            ));
+            vcur = format!("vc{i}");
+            acur = format!("ac{i}");
+            acc_duration += dur;
+        }
+    }
+    let vcat = vcur;
+    let acat = acur;
 
-    // Text overlays on top of the concatenated video.
-    let mut current = "vcat".to_string();
+    // Text overlays on top of the merged video.
+    let mut current = vcat;
     if let Some(font) = &settings.font_file {
         let text_track = project.tracks.iter().find(|t| t.kind == TrackKind::Text);
         if let Some(track) = text_track {
             for (j, clip) in track.clips.iter().enumerate() {
                 let Some(text) = &clip.text else { continue };
                 let next = format!("vtxt{j}");
+                let color = clip
+                    .text_color
+                    .as_deref()
+                    .map(|hex| format!("0x{}", hex.trim_start_matches('#')))
+                    .unwrap_or_else(|| "white".to_string());
                 filters.push(format!(
-                    "[{current}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor=white:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-220:enable='between(t,{:.3},{:.3})'[{next}]",
+                    "[{current}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor={}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-220:enable='between(t,{:.3},{:.3})'[{next}]",
                     font.display(),
                     escape_drawtext(text),
                     clip.font_size.unwrap_or(64),
+                    color,
                     clip.timeline_start,
                     clip.timeline_end(),
                 ));
@@ -241,10 +281,10 @@ pub fn build_ffmpeg_args(
             "[{music_idx}:a]aresample=48000,volume={:.2}[music]",
             music_clip.volume
         ));
-        filters.push("[acat][music]amix=inputs=2:duration=first:dropout_transition=0[aout]".into());
+        filters.push(format!("[{acat}][music]amix=inputs=2:duration=first:dropout_transition=0[aout]"));
         "aout"
     } else {
-        "acat"
+        acat.as_str()
     };
 
     args.push("-filter_complex".into());
@@ -370,6 +410,33 @@ mod tests {
     }
 
     #[test]
+    fn transition_becomes_xfade_with_correct_offset() {
+        let mut p = Project::default();
+        p.add_clip("track-video", Clip::new("c1", "a.mp4", 0.0, 4.0, 0.0)).unwrap();
+        let mut c2 = Clip::new("c2", "b.mp4", 0.0, 4.0, 4.0);
+        c2.transition_in = Some(editor_core::Transition { kind: "fade".into(), duration: 0.5 });
+        c2.volume = 0.4;
+        p.add_clip("track-video", c2).unwrap();
+        let sources = BTreeMap::from([
+            ("c1".to_string(), PathBuf::from("/media/a.mp4")),
+            ("c2".to_string(), PathBuf::from("/media/b.mp4")),
+        ]);
+        let args = build_ffmpeg_args(&p, &sources, Path::new("o.mp4"), &ExportSettings::default()).unwrap();
+        let j = args.join(" ");
+        // offset = first clip duration (4s) - transition (0.5s)
+        assert!(j.contains("xfade=transition=fade:duration=0.500:offset=3.500"), "{j}");
+        assert!(j.contains("acrossfade=d=0.500"), "{j}");
+        assert!(j.contains("volume=0.40"), "{j}");
+        assert!(!j.contains("concat=n=2"), "transition should replace concat: {j}");
+    }
+
+    #[test]
+    fn reverse_effect_filters() {
+        assert_eq!(effect_video_filters(&editor_core::Effect::Reverse, 3.0), vec!["reverse"]);
+        assert_eq!(effect_audio_filters(&editor_core::Effect::Reverse, 3.0), vec!["areverse"]);
+    }
+
+    #[test]
     fn sepia_interpolates_matrix() {
         let full = effect_video_filters(&editor_core::Effect::Sepia { intensity: 1.0 }, 4.0);
         assert!(full[0].contains("colorchannelmixer=0.393:0.769:0.189:0"), "{}", full[0]);
@@ -412,6 +479,36 @@ mod tests {
         p.add_clip("track-video", c).unwrap();
         let sources = BTreeMap::from([("c1".to_string(), src)]);
         let out = dir.join("out-effects.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).unwrap();
+        assert!(out.metadata().unwrap().len() > 10_000);
+    }
+
+    /// Live end-to-end render of two clips joined by an xfade transition.
+    #[test]
+    #[ignore]
+    fn renders_two_clips_with_transition() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.mp4");
+        if !src.exists() {
+            let status = Command::new("ffmpeg")
+                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=30",
+                       "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                       "-c:v", "libx264", "-c:a", "aac", "-shortest"])
+                .arg(&src).status().unwrap();
+            assert!(status.success());
+        }
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        p.add_clip("track-video", Clip::new("c1", "src.mp4", 0.0, 2.0, 0.0)).unwrap();
+        let mut c2 = Clip::new("c2", "src.mp4", 0.0, 2.0, 2.0);
+        c2.transition_in = Some(editor_core::Transition { kind: "dissolve".into(), duration: 0.5 });
+        p.add_clip("track-video", c2).unwrap();
+        let sources = BTreeMap::from([
+            ("c1".to_string(), src.clone()),
+            ("c2".to_string(), src),
+        ]);
+        let out = dir.join("out-transition.mp4");
         render(&p, &sources, &out, &ExportSettings::default()).unwrap();
         assert!(out.metadata().unwrap().len() > 10_000);
     }

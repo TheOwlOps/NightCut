@@ -7,6 +7,7 @@ import {
   defaultEffect,
   emptyProject,
   newId,
+  parseSrt,
   projectDuration,
   splitClip,
 } from "../lib/project";
@@ -35,7 +36,15 @@ interface EditorState {
   future: Project[];
   addMedia: (item: MediaItem) => void;
   addToTimeline: (mediaId: string) => void;
-  addTextClip: (text: string) => void;
+  addTextClip: (text: string, style?: { fontSize: number; color: string }) => void;
+  addCaptionsFromSrt: (content: string) => number;
+  applyFilterPreset: (effects: Effect[]) => void;
+  applyTransition: (kind: string) => void;
+  setSelectedSpeed: (speed: number) => void;
+  setSelectedVolume: (volume: number) => void;
+  setSelectedTransitionDuration: (duration: number) => void;
+  removeSelectedTransition: () => void;
+  setSelectedTextStyle: (patch: { fontSize?: number; textColor?: string }) => void;
   select: (sel: Selection | null) => void;
   setPlayhead: (t: number) => void;
   setPlaying: (b: boolean) => void;
@@ -95,7 +104,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({ ...withHistory(s, next), selected: { trackId, clipId: clip.id } });
   },
 
-  addTextClip: (text) => {
+  addTextClip: (text, style) => {
     const s = get();
     const clip: Clip = {
       id: newId("text"),
@@ -106,11 +115,119 @@ export const useEditor = create<EditorState>((set, get) => ({
       speed: 1,
       volume: 1,
       text,
-      fontSize: 64,
+      fontSize: style?.fontSize ?? 64,
+      textColor: style?.color ?? "#ffffff",
     };
     const next = structuredClone(s.project);
     next.tracks.find((t) => t.id === "track-text")!.clips.push(clip);
     set({ ...withHistory(s, next), selected: { trackId: "track-text", clipId: clip.id } });
+  },
+
+  addCaptionsFromSrt: (content) => {
+    const cues = parseSrt(content);
+    if (cues.length === 0) return 0;
+    const s = get();
+    const next = structuredClone(s.project);
+    const track = next.tracks.find((t) => t.id === "track-text")!;
+    for (const cue of cues) {
+      // A caption is a text clip whose local window is [0, cue length] and
+      // whose timeline position is the cue start (clipDuration semantics).
+      track.clips.push({
+        id: newId("caption"),
+        source: "",
+        inSec: 0,
+        outSec: Math.max(0.5, cue.end - cue.start),
+        timelineStart: cue.start,
+        speed: 1,
+        volume: 1,
+        text: cue.text,
+        fontSize: 48,
+        textColor: "#ffffff",
+      });
+    }
+    track.clips.sort((a, b) => a.timelineStart - b.timelineStart);
+    set(withHistory(s, next));
+    return cues.length;
+  },
+
+  applyFilterPreset: (effects) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip) return;
+    clip.effects = [...(clip.effects ?? []), ...structuredClone(effects)];
+    set(withHistory(s, next));
+  },
+
+  applyTransition: (kind) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const track = next.tracks.find((t) => t.id === s.selected!.trackId);
+    const clip = track?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip || !track || track.clips[0]?.id === clip.id) return;
+    clip.transitionIn = { kind, duration: 0.5 };
+    set(withHistory(s, next));
+  },
+
+  setSelectedSpeed: (speed) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (clip) clip.speed = Math.min(4, Math.max(0.25, speed));
+    set(withHistory(s, next));
+  },
+
+  setSelectedVolume: (volume) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (clip) clip.volume = Math.min(2, Math.max(0, volume));
+    set(withHistory(s, next));
+  },
+
+  setSelectedTransitionDuration: (duration) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (clip?.transitionIn) clip.transitionIn.duration = Math.min(3, Math.max(0.1, duration));
+    set(withHistory(s, next));
+  },
+
+  removeSelectedTransition: () => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (clip) delete clip.transitionIn;
+    set(withHistory(s, next));
+  },
+
+  setSelectedTextStyle: (patch) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip) return;
+    if (patch.fontSize !== undefined) clip.fontSize = patch.fontSize;
+    if (patch.textColor !== undefined) clip.textColor = patch.textColor;
+    set(withHistory(s, next));
   },
 
   select: (sel) => set({ selected: sel }),

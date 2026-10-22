@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import MediaBin from "./features/editor/MediaBin";
+import LeftPanel from "./features/editor/LeftPanel";
 import Preview from "./features/editor/Preview";
 import Timeline from "./features/editor/Timeline";
 import Inspector from "./features/editor/Inspector";
@@ -66,7 +66,7 @@ export default function App() {
       </header>
 
       <main className="workspace">
-        <MediaBin />
+        <LeftPanel />
         <Preview />
         <Inspector />
       </main>

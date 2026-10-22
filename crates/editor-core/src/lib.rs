@@ -69,6 +69,19 @@ pub enum Effect {
     FadeIn { duration: f64 },
     /// Video+audio fade out, seconds.
     FadeOut { duration: f64 },
+    /// Play the clip backwards (rendered at export; the preview cannot
+    /// reverse an HTML5 video element).
+    Reverse,
+}
+
+/// A transition *into* a clip from the previous clip on the same track
+/// (CapCut applies transitions between clips). `kind` is an FFmpeg xfade
+/// transition name: fade, fadeblack, fadewhite, dissolve, wipeleft,
+/// wiperight, slideleft, slideright, circleopen, radial, smoothleft, …
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Transition {
+    pub kind: String,
+    pub duration: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -98,6 +111,12 @@ pub struct Clip {
     /// Ordered effects for this clip (video clips only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<Effect>,
+    /// Transition into this clip from the previous clip (video track).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition_in: Option<Transition>,
+    /// Text color for text clips, `#RRGGBB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_color: Option<String>,
 }
 
 fn default_speed() -> f64 { 1.0 }
@@ -109,7 +128,7 @@ impl Clip {
             id: id.into(), source: source.into(), proxy: None,
             in_sec, out_sec, timeline_start,
             speed: 1.0, volume: 1.0, text: None, font_size: None,
-            effects: Vec::new(),
+            effects: Vec::new(), transition_in: None, text_color: None,
         }
     }
     pub fn text_clip(id: impl Into<String>, text: impl Into<String>, timeline_start: f64, duration: f64) -> Self {

@@ -15,7 +15,8 @@ export type Effect =
   | { type: "mirror" }
   | { type: "invert" }
   | { type: "fade_in"; duration: number }
-  | { type: "fade_out"; duration: number };
+  | { type: "fade_out"; duration: number }
+  | { type: "reverse" };
 
 export const EFFECT_LABELS: Record<Effect["type"], string> = {
   adjust: "Brightness / Contrast",
@@ -29,7 +30,66 @@ export const EFFECT_LABELS: Record<Effect["type"], string> = {
   invert: "Invert colors",
   fade_in: "Fade in",
   fade_out: "Fade out",
+  reverse: "Reverse (export only)",
 };
+
+/** Transition presets — names are FFmpeg xfade transitions (CapCut-style). */
+export const TRANSITION_PRESETS: { kind: string; label: string }[] = [
+  { kind: "fade", label: "Fade" },
+  { kind: "fadeblack", label: "Fade to black" },
+  { kind: "fadewhite", label: "Fade to white" },
+  { kind: "dissolve", label: "Dissolve" },
+  { kind: "wipeleft", label: "Wipe left" },
+  { kind: "wiperight", label: "Wipe right" },
+  { kind: "slideleft", label: "Slide left" },
+  { kind: "slideright", label: "Slide right" },
+  { kind: "circleopen", label: "Circle open" },
+  { kind: "radial", label: "Radial" },
+  { kind: "smoothleft", label: "Smooth left" },
+  { kind: "zoomin", label: "Zoom in" },
+];
+
+/** One-click filter presets: named stacks of effects (CapCut Filters tab). */
+export const FILTER_PRESETS: { name: string; effects: Effect[] }[] = [
+  { name: "Vivid", effects: [{ type: "adjust", brightness: 0.03, contrast: 1.25, saturation: 1.5 }] },
+  { name: "Warm", effects: [{ type: "temperature", kelvin: 4800 }, { type: "adjust", brightness: 0.03, contrast: 1.05, saturation: 1.15 }] },
+  { name: "Cool", effects: [{ type: "temperature", kelvin: 8200 }, { type: "adjust", brightness: 0, contrast: 1.08, saturation: 0.95 }] },
+  { name: "Mono", effects: [{ type: "grayscale" }, { type: "adjust", brightness: 0, contrast: 1.2, saturation: 0 }] },
+  { name: "Vintage", effects: [{ type: "sepia", intensity: 0.65 }, { type: "vignette", strength: 0.55 }, { type: "adjust", brightness: 0.04, contrast: 0.92, saturation: 0.85 }] },
+  { name: "Soft", effects: [{ type: "blur", sigma: 1.6 }, { type: "adjust", brightness: 0.07, contrast: 0.95, saturation: 1.05 }] },
+  { name: "Faded", effects: [{ type: "adjust", brightness: 0.1, contrast: 0.8, saturation: 0.75 }, { type: "vignette", strength: 0.3 }] },
+  { name: "Sharp", effects: [{ type: "sharpen", amount: 1.4 }, { type: "adjust", brightness: 0, contrast: 1.12, saturation: 1.1 }] },
+];
+
+/** Text style presets (CapCut Text tab). */
+export const TEXT_PRESETS: { name: string; fontSize: number; color: string }[] = [
+  { name: "Title", fontSize: 110, color: "#ffffff" },
+  { name: "Subtitle", fontSize: 64, color: "#ffffff" },
+  { name: "Caption", fontSize: 48, color: "#ffe14d" },
+  { name: "Neon", fontSize: 72, color: "#22d3ee" },
+  { name: "Alert", fontSize: 80, color: "#ff5252" },
+];
+
+/** Parse an .srt subtitle file into cues. */
+export function parseSrt(content: string): { start: number; end: number; text: string }[] {
+  const cues: { start: number; end: number; text: string }[] = [];
+  const blocks = content.replace(/\r\n/g, "\n").split(/\n\n+/);
+  const toSec = (t: string) => {
+    const m = t.trim().replace(",", ".").split(":").map(Number);
+    if (m.length === 3) return m[0] * 3600 + m[1] * 60 + m[2];
+    if (m.length === 2) return m[0] * 60 + m[1];
+    return 0;
+  };
+  for (const block of blocks) {
+    const lines = block.split("\n").filter((l) => l.trim().length > 0);
+    const timeIdx = lines.findIndex((l) => l.includes("-->"));
+    if (timeIdx < 0) continue;
+    const [a, b] = lines[timeIdx].split("-->");
+    const text = lines.slice(timeIdx + 1).join(" ").replace(/<[^>]+>/g, "").trim();
+    if (text) cues.push({ start: toSec(a), end: toSec(b), text });
+  }
+  return cues;
+}
 
 export function defaultEffect(type: Effect["type"]): Effect {
   switch (type) {
@@ -109,6 +169,7 @@ export function effectFfmpegFilters(fx: Effect, clipDur: number): { video: strin
     case "temperature": return { video: [`colortemperature=temperature=${fx.kelvin.toFixed(0)}:mix=1`], audio: [] };
     case "mirror": return { video: ["hflip"], audio: [] };
     case "invert": return { video: ["negate"], audio: [] };
+    case "reverse": return { video: ["reverse"], audio: ["areverse"] };
     case "fade_in":
       return { video: [`fade=t=in:st=0.000:d=${fx.duration.toFixed(3)}`], audio: [`afade=t=in:st=0.000:d=${fx.duration.toFixed(3)}`] };
     case "fade_out": {
@@ -132,7 +193,9 @@ export interface Clip {
   volume: number;
   text?: string;
   fontSize?: number;
+  textColor?: string;
   effects?: Effect[];
+  transitionIn?: { kind: string; duration: number };
 }
 
 export interface Track {
@@ -207,6 +270,8 @@ export function toRustJson(p: Project): string {
           ...(c.text !== undefined ? { text: c.text } : {}),
           ...(c.fontSize !== undefined ? { fontSize: c.fontSize } : {}),
           ...(c.effects && c.effects.length > 0 ? { effects: c.effects } : {}),
+          ...(c.transitionIn ? { transitionIn: c.transitionIn } : {}),
+          ...(c.textColor ? { textColor: c.textColor } : {}),
         })),
       })),
     },
@@ -233,12 +298,32 @@ export function buildFfmpegCommand(p: Project, output = "nightcut-export.mp4"): 
     const vFx = (c.effects ?? []).flatMap((fx) => effectFfmpegFilters(fx, dur).video);
     const aFx = (c.effects ?? []).flatMap((fx) => effectFfmpegFilters(fx, dur).audio);
     chains.push(
-      `[${i}:v]${[`trim=start=${c.inSec.toFixed(3)}:end=${c.outSec.toFixed(3)}`, `setpts=(PTS-STARTPTS)/${c.speed}`, `scale=${w}:${h}:force_original_aspect_ratio=decrease`, `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`, `fps=${fps}`, "setsar=1", ...vFx].join(",")}[v${i}]`,
-      `[${i}:a]${[`atrim=start=${c.inSec.toFixed(3)}:end=${c.outSec.toFixed(3)}`, "asetpts=PTS-STARTPTS", `atempo=${Math.min(2, Math.max(0.5, c.speed))}`, "aresample=48000", ...aFx].join(",")}[a${i}]`,
+      `[${i}:v]${[`trim=start=${c.inSec.toFixed(3)}:end=${c.outSec.toFixed(3)}`, `setpts=(PTS-STARTPTS)/${c.speed}`, `scale=${w}:${h}:force_original_aspect_ratio=decrease`, `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`, `fps=${fps}`, "setsar=1", "format=yuv420p", ...vFx].join(",")}[v${i}]`,
+      `[${i}:a]${[`atrim=start=${c.inSec.toFixed(3)}:end=${c.outSec.toFixed(3)}`, "asetpts=PTS-STARTPTS", `atempo=${Math.min(2, Math.max(0.5, c.speed))}`, "aresample=48000", `volume=${c.volume.toFixed(2)}`, ...aFx].join(",")}[a${i}]`,
     );
   });
-  chains.push(
-    `${video.map((_, i) => `[v${i}][a${i}]`).join("")}concat=n=${video.length}:v=1:a=1[vcat][acat]`,
-  );
-  return `ffmpeg -y ${inputs} -filter_complex "${chains.join(";")}" -map "[vcat]" -map "[acat]" -c:v libx264 -crf 20 -c:a aac -b:a 160k -movflags +faststart "${output}"`;
+  // Merge in order: xfade where a clip has a transition, concat otherwise.
+  let vcur = "v0";
+  let acur = "a0";
+  let acc = clipDuration(video[0]);
+  video.forEach((c, i) => {
+    if (i === 0) return;
+    const dur = clipDuration(c);
+    const t = c.transitionIn;
+    if (t && t.duration > 0 && t.duration < acc && t.duration < dur) {
+      chains.push(
+        `[${vcur}][v${i}]xfade=transition=${t.kind}:duration=${t.duration.toFixed(3)}:offset=${(acc - t.duration).toFixed(3)}[vx${i}]`,
+        `[${acur}][a${i}]acrossfade=d=${t.duration.toFixed(3)}[ax${i}]`,
+      );
+      vcur = `vx${i}`;
+      acur = `ax${i}`;
+      acc += dur - t.duration;
+    } else {
+      chains.push(`[${vcur}][${acur}][v${i}][a${i}]concat=n=2:v=1:a=1[vc${i}][ac${i}]`);
+      vcur = `vc${i}`;
+      acur = `ac${i}`;
+      acc += dur;
+    }
+  });
+  return `ffmpeg -y ${inputs} -filter_complex "${chains.join(";")}" -map "[${vcur}]" -map "[${acur}]" -c:v libx264 -crf 20 -c:a aac -b:a 160k -movflags +faststart "${output}"`;
 }

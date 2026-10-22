@@ -6,8 +6,11 @@ const EFFECT_TYPES = Object.keys(EFFECT_LABELS) as Effect["type"][];
 
 /** Right panel: properties of the selected clip + canvas presets. */
 export default function Inspector() {
-  const { project, selected, updateSelectedText, setCanvas, addEffect, removeEffect, updateEffect } =
-    useEditor();
+  const {
+    project, selected, updateSelectedText, setCanvas, addEffect, removeEffect, updateEffect,
+    setSelectedSpeed, setSelectedVolume, setSelectedTransitionDuration, removeSelectedTransition,
+    setSelectedTextStyle,
+  } = useEditor();
   const [newFx, setNewFx] = useState<Effect["type"]>("adjust");
   const clip = selected
     ? project.tracks.find((t) => t.id === selected.trackId)?.clips.find((c) => c.id === selected.clipId)
@@ -54,6 +57,41 @@ export default function Inspector() {
             <span>Speed</span>
             <b>{clip.speed}×</b>
           </div>
+          {clip.text === undefined && (
+            <>
+              <div className="field">
+                <span>Speed</span>
+                <Slider label="Speed" value={clip.speed} min={0.25} max={4} step={0.05}
+                  onChange={setSelectedSpeed} />
+                <div className="row">
+                  {[0.5, 1, 1.5, 2].map((v) => (
+                    <button key={v} className="chip" onClick={() => setSelectedSpeed(v)}>{v}×</button>
+                  ))}
+                </div>
+              </div>
+              <div className="field">
+                <span>Audio</span>
+                <Slider label="Volume" value={clip.volume} min={0} max={2} step={0.05}
+                  onChange={setSelectedVolume} />
+              </div>
+              <div className="field">
+                <span>Transition in</span>
+                {clip.transitionIn ? (
+                  <>
+                    <div className="row">
+                      <strong>{clip.transitionIn.kind}</strong>
+                      <span className="spacer" />
+                      <button onClick={removeSelectedTransition}>✕</button>
+                    </div>
+                    <Slider label="Seconds" value={clip.transitionIn.duration} min={0.1} max={3} step={0.1}
+                      onChange={setSelectedTransitionDuration} />
+                  </>
+                ) : (
+                  <p className="hint">None — add one from the Transitions tab on the left.</p>
+                )}
+              </div>
+            </>
+          )}
           {clip.text !== undefined && (
             <div className="field">
               <span>Text</span>
@@ -62,6 +100,25 @@ export default function Inspector() {
                 rows={3}
                 onChange={(e) => updateSelectedText(e.target.value)}
               />
+              <Slider label="Size" value={clip.fontSize ?? 64} min={24} max={200} step={2}
+                onChange={(v) => setSelectedTextStyle({ fontSize: v })} />
+              <div className="row">
+                {["#ffffff", "#ffe14d", "#22d3ee", "#ff5252", "#7CFC00", "#000000"].map((c) => (
+                  <button
+                    key={c}
+                    className="swatch"
+                    style={{ background: c }}
+                    title={c}
+                    onClick={() => setSelectedTextStyle({ textColor: c })}
+                  />
+                ))}
+                <input
+                  type="color"
+                  className="color-input"
+                  value={clip.textColor ?? "#ffffff"}
+                  onChange={(e) => setSelectedTextStyle({ textColor: e.target.value })}
+                />
+              </div>
             </div>
           )}
           {clip.text === undefined && (

@@ -27,7 +27,7 @@ export default function MediaBin() {
   };
 
   return (
-    <aside className="mediabin">
+    <div className="dock-panel">
       <div className="panel-title">Media</div>
       <button className="primary" onClick={() => fileRef.current?.click()}>
         + Import video / audio
@@ -61,6 +61,6 @@ export default function MediaBin() {
           </div>
         ))}
       </div>
-    </aside>
+    </div>
   );
 }

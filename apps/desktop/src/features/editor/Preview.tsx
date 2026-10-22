@@ -62,7 +62,11 @@ export default function Preview() {
           <div className="preview-empty">NightCut</div>
         )}
         {activeText?.map((c) => (
-          <div key={c.id} className="preview-text" style={{ fontSize: (c.fontSize ?? 64) / 16 }}>
+          <div
+            key={c.id}
+            className="preview-text"
+            style={{ fontSize: (c.fontSize ?? 64) / 16, color: c.textColor ?? "#ffffff" }}
+          >
             {c.text}
           </div>
         ))}

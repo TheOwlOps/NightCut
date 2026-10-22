@@ -40,8 +40,12 @@ your machine, and stays small:
       FFmpeg filters, approximated live in the preview, sliders in the Inspector
 - [x] Tauri 2 shell with native `probe_media` / `make_proxy` / `waveform` /
       `export_video` commands wired to the Rust crates
-- [ ] Phase 1: multi-clip polish, .srt import, music mixing in UI, speed
-      controls, transitions
+- [x] Wave 2 (CapCut study, see docs/CAPCUT-STUDY.md): CapCut-style left dock
+      (Media / Text / Effects / Filters / Transitions / Audio / Captions),
+      transitions between clips via FFmpeg xfade (12 presets), speed + volume
+      per clip, text style presets + colors, .srt caption import, filter
+      presets, reverse effect, timeline magnet snapping
+- [ ] Phase 1 leftovers: music mixing polish in UI
 - [ ] Phase 2 (the "smooth like the big editors" phase): proxy cache,
       thumbnail/waveform rendering on the timeline, pre-render around playhead
 - [ ] Phase 3: local auto-captions (whisper.cpp, optional download), LUTs,

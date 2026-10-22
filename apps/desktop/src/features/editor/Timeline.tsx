@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useEditor } from "../../store/editor";
 import { Clip, clipDuration, projectDuration } from "../../lib/project";
 import { formatTime } from "./Preview";
@@ -18,6 +18,23 @@ export default function Timeline() {
   const { project, zoom, playhead, selected } = state;
   const drag = useRef<DragMode | null>(null);
   const tracksRef = useRef<HTMLDivElement>(null);
+  const [snap, setSnap] = useState(true);
+
+  /** Magnet snapping (CapCut's main-track magnet): pull a time to the
+   * nearest clip edge or the playhead when within 0.3s. */
+  const snapTime = (t: number) => {
+    if (!snap) return t;
+    const points = [playhead];
+    for (const track of project.tracks)
+      for (const c of track.clips) points.push(c.timelineStart, c.timelineStart + (c.outSec - c.inSec) / c.speed);
+    let best = t;
+    let bestDist = 0.3;
+    for (const p of points) {
+      const d = Math.abs(p - t);
+      if (d < bestDist) { bestDist = d; best = p; }
+    }
+    return best;
+  };
 
   const duration = Math.max(30, projectDuration(project) + 5);
   const width = duration * zoom;
@@ -32,8 +49,8 @@ export default function Timeline() {
     if (!d) return;
     const t = timeAt(e.clientX);
     if (d.type === "scrub") state.setPlayhead(t);
-    else if (d.type === "move") state.moveClip(d.trackId, d.clipId, t - d.grabOffset);
-    else state.trimClip(d.trackId, d.clipId, d.edge, t);
+    else if (d.type === "move") state.moveClip(d.trackId, d.clipId, snapTime(t - d.grabOffset));
+    else state.trimClip(d.trackId, d.clipId, d.edge, snapTime(t));
   };
   const stopDrag = () => (drag.current = null);
 
@@ -59,6 +76,13 @@ export default function Timeline() {
         </button>
         <button onClick={() => state.addTextClip("Your text")} title="Add a text clip at the playhead">
           T+ Text
+        </button>
+        <button
+          className={snap ? "chip active" : "chip"}
+          onClick={() => setSnap(!snap)}
+          title="Magnet: snap clips to edges and the playhead"
+        >
+          🧲 Snap
         </button>
         <span className="spacer" />
         <label>
