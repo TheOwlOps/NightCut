@@ -74,6 +74,14 @@ your machine, and stays small:
 
 Full design notes: [docs/BLUEPRINT.md](docs/BLUEPRINT.md)
 
+## For AI agents
+
+NightCut is agent-editable: the `nightcut-mcp` MCP server (22 tools)
+lets an AI create projects, cut/trim/split clips, apply effects, add
+captions (SRT or local whisper), detect scenes/beats/silences, remove
+backgrounds and render — no GUI, no cloud. See
+[docs/AGENT-MCP.md](docs/AGENT-MCP.md).
+
 ## Layout
 
 ```
@@ -83,6 +91,7 @@ apps/desktop/          Tauri 2 + React + TypeScript editor
 crates/editor-core/    Timeline model + project JSON schema + undo/redo
 crates/media-engine/   ffprobe, proxy, thumbnails, waveform peaks
 crates/export-engine/  Project → FFmpeg filter graph → encode
+crates/agent-server/   nightcut-mcp — MCP server so AI agents can edit video
 assets/                Logo (SVG master + PNG)
 tools/ffmpeg/          How the FFmpeg sidecar is fetched (not bundled)
 ```

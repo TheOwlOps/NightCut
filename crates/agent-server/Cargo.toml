@@ -1,0 +1,17 @@
+[package]
+name = "agent-server"
+version = "0.1.0"
+edition = "2021"
+description = "nightcut-mcp: MCP (JSON-RPC over stdio) server so AI agents can edit video with the NightCut engines"
+license = "MIT"
+
+[[bin]]
+name = "nightcut-mcp"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+editor-core = { path = "../editor-core" }
+media-engine = { path = "../media-engine" }
+export-engine = { path = "../export-engine" }

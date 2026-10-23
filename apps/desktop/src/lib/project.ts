@@ -22,7 +22,22 @@ export type Effect =
   | { type: "mask"; shape: string; size: number; feather: number; invert: boolean }
   | { type: "stabilize"; smoothing: number }
   | { type: "pitch_shift"; semitones: number }
-  | { type: "lut"; path: string };
+  | { type: "lut"; path: string }
+  | { type: "loudnorm"; targetLufs: number }
+  | { type: "video_denoise"; strength: number }
+  | {
+      type: "curves";
+      master: string;
+      red: string;
+      green: string;
+      blue: string;
+    }
+  | {
+      type: "color_wheels";
+      shadows: [number, number, number];
+      midtones: [number, number, number];
+      highlights: [number, number, number];
+    };
 
 export const EFFECT_LABELS: Record<Effect["type"], string> = {
   adjust: "Brightness / Contrast",
@@ -43,6 +58,10 @@ export const EFFECT_LABELS: Record<Effect["type"], string> = {
   stabilize: "Stabilize",
   pitch_shift: "Pitch shift",
   lut: "LUT (.cube)",
+  loudnorm: "Loudness normalization",
+  video_denoise: "Video denoise",
+  curves: "Curves (brighten)",
+  color_wheels: "Color wheels (warm)",
 };
 
 export interface SpeedPoint {
@@ -225,6 +244,11 @@ export function defaultEffect(type: Effect["type"]): Effect {
     case "stabilize": return { type, smoothing: 10 };
     case "pitch_shift": return { type, semitones: 4 };
     case "lut": return { type, path: "" };
+    case "loudnorm": return { type, targetLufs: -14 };
+    case "video_denoise": return { type, strength: 0.5 };
+    case "curves": return { type, master: "0/0 0.5/0.62 1/1", red: "", green: "", blue: "" };
+    case "color_wheels":
+      return { type, shadows: [0.08, 0, -0.08], midtones: [0, 0, 0], highlights: [0.06, 0.03, -0.04] };
     default: return { type } as Effect;
   }
 }
@@ -316,6 +340,27 @@ export function effectFfmpegFilters(fx: Effect, clipDur: number): { video: strin
       return { video: [], audio: [`rubberband=pitch=${Math.pow(2, Math.min(12, Math.max(-12, fx.semitones)) / 12).toFixed(4)}`] };
     case "lut":
       return { video: [`lut3d=file='${fx.path.replace(/'/g, "\\'")}'`], audio: [] };
+    case "loudnorm":
+      return { video: [], audio: [`loudnorm=I=${fx.targetLufs.toFixed(1)}:TP=-1.5:LRA=11`] };
+    case "video_denoise": {
+      const s = Math.min(1, Math.max(0, fx.strength));
+      return { video: [`hqdn3d=${(2 + s * 8).toFixed(1)}:${(2 + s * 8).toFixed(1)}:${(3 + s * 10).toFixed(1)}:${(3 + s * 10).toFixed(1)}`], audio: [] };
+    }
+    case "curves": {
+      const parts: string[] = [];
+      if (fx.master) parts.push(`master='${fx.master}'`);
+      if (fx.red) parts.push(`red='${fx.red}'`);
+      if (fx.green) parts.push(`green='${fx.green}'`);
+      if (fx.blue) parts.push(`blue='${fx.blue}'`);
+      return { video: parts.length ? [`curves=${parts.join(":")}`] : [], audio: [] };
+    }
+    case "color_wheels": {
+      const n = (v: number) => Math.min(1, Math.max(-1, v)).toFixed(2);
+      const [rs, gs, bs] = fx.shadows.map(n);
+      const [rm, gm, bm] = fx.midtones.map(n);
+      const [rh, gh, bh] = fx.highlights.map(n);
+      return { video: [`colorbalance=rs=${rs}:gs=${gs}:bs=${bs}:rm=${rm}:gm=${gm}:bm=${bm}:rh=${rh}:gh=${gh}:bh=${bh}`], audio: [] };
+    }
   }
 }
 
@@ -360,6 +405,8 @@ export interface Project {
   tracks: Track[];
   /** Timeline markers (seconds) — beat detection results. */
   markers?: number[];
+  /** Canvas fill for clips not covering the frame: "black" | "blur". */
+  canvasFill?: string;
 }
 
 export const clipDuration = (c: Clip) => {
@@ -436,7 +483,13 @@ export function toRustJson(p: Project): string {
           volume: c.volume,
           ...(c.text !== undefined ? { text: c.text } : {}),
           ...(c.fontSize !== undefined ? { fontSize: c.fontSize } : {}),
-          ...(c.effects && c.effects.length > 0 ? { effects: c.effects } : {}),
+          ...(c.effects && c.effects.length > 0
+            ? {
+                effects: c.effects.map((fx) =>
+                  fx.type === "loudnorm" ? { type: "loudnorm", target_lufs: fx.targetLufs } : fx,
+                ),
+              }
+            : {}),
           ...(c.transitionIn ? { transitionIn: c.transitionIn } : {}),
           ...(c.textColor ? { textColor: c.textColor } : {}),
           ...(c.speedCurve ? { speedCurve: c.speedCurve } : {}),
@@ -449,6 +502,7 @@ export function toRustJson(p: Project): string {
         })),
       })),
       ...((p.markers?.length ?? 0) > 0 ? { markers: p.markers } : {}),
+      ...(p.canvasFill ? { canvas_fill: p.canvasFill } : {}),
     },
     null,
     2,

@@ -90,6 +90,17 @@ pub enum Effect {
     PitchShift { semitones: f64 },
     /// Apply a .cube LUT file (CapCut LUT filters), by path.
     Lut { path: String },
+    /// Loudness normalization to broadcast standard (CapCut Loudness
+    /// Normalization): single-pass loudnorm to `target_lufs` (e.g. -14).
+    Loudnorm { target_lufs: f64 },
+    /// Video noise reduction (CapCut Video Denoise): hqdn3d strengths.
+    VideoDenoise { strength: f64 },
+    /// Color curves (CapCut Curves): FFmpeg curves point strings per
+    /// channel ("0/0 0.5/0.6 1/1"); empty string = untouched channel.
+    Curves { master: String, red: String, green: String, blue: String },
+    /// Color wheels (CapCut): tint strengths -1..1 for shadows,
+    /// midtones, highlights as (r, g, b) offsets via colorbalance.
+    ColorWheels { shadows: [f64; 3], midtones: [f64; 3], highlights: [f64; 3] },
 }
 
 /// One point of a speed curve (CapCut "Curve" speed). `at` is a fraction
@@ -278,6 +289,11 @@ pub struct Project {
     /// "Markers"). Snapping can target them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<f64>,
+    /// How clips that don't fill the canvas are padded (CapCut Canvas):
+    /// "black" (letterbox) or "blur" (a blurred enlarged copy fills the
+    /// frame — the vertical-video look). Default "black".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub canvas_fill: String,
 }
 
 impl Default for Project {
@@ -291,6 +307,7 @@ impl Default for Project {
                 Track::new("track-text", TrackKind::Text),
             ],
             markers: Vec::new(),
+            canvas_fill: String::new(),
         }
     }
 }

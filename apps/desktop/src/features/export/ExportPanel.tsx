@@ -11,9 +11,12 @@ const isTauri = () => "__TAURI_INTERNALS__" in window;
  */
 export default function ExportPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const project = useEditor((s) => s.project);
+  const loadProject = useEditor((s) => s.loadProject);
   const [output, setOutput] = useState("nightcut-export.mp4");
   const [maxHeight, setMaxHeight] = useState<number>(0); // 0 = original
-  const [gif, setGif] = useState(false);
+  const [format, setFormat] = useState<"mp4" | "gif" | "mp3">("mp4");
+  const gif = format === "gif";
+  const audioOnly = format === "mp3";
   const [status, setStatus] = useState<string>("");
   const command = useMemo(() => buildFfmpegCommand(project, output), [project, output]);
 
@@ -37,12 +40,18 @@ export default function ExportPanel({ open, onClose }: { open: boolean; onClose:
       const sources: Record<string, string> = {};
       for (const t of project.tracks)
         for (const c of t.clips) if (c.source) sources[c.id] = c.source;
+      const outName = gif
+        ? output.replace(/\.mp4$/i, ".gif")
+        : audioOnly
+          ? output.replace(/\.mp4$/i, ".mp3")
+          : output;
       await invoke("export_video", {
         projectJson: toRustJson(project),
         sources,
-        output: gif ? output.replace(/\.mp4$/i, ".gif") : output,
+        output: outName,
         maxHeight: maxHeight > 0 ? maxHeight : null,
         gif,
+        audioOnly,
       });
       setStatus(`Done: ${output}`);
     } catch (err) {
@@ -70,12 +79,23 @@ export default function ExportPanel({ open, onClose }: { open: boolean; onClose:
           </label>
           <label className="field" style={{ flex: 1 }}>
             <span>Format</span>
-            <select value={gif ? "gif" : "mp4"} onChange={(e) => setGif(e.target.value === "gif")}>
+            <select value={format} onChange={(e) => setFormat(e.target.value as typeof format)}>
               <option value="mp4">MP4 (video + audio)</option>
               <option value="gif">GIF (15 fps, silent)</option>
+              <option value="mp3">MP3 (audio only)</option>
             </select>
           </label>
         </div>
+        <label className="field">
+          <span>Canvas fill (clips that don't cover the frame)</span>
+          <select
+            value={project.canvasFill ?? "black"}
+            onChange={(e) => loadProject({ ...project, canvasFill: e.target.value })}
+          >
+            <option value="black">Black bars</option>
+            <option value="blur">Blurred background (vertical-video look)</option>
+          </select>
+        </label>
         <label className="field">
           <span>FFmpeg command (generated from this timeline)</span>
           <textarea readOnly rows={5} value={command} />

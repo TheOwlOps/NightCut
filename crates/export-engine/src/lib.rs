@@ -69,11 +69,14 @@ pub struct ExportSettings {
     pub max_height: Option<u32>,
     /// Render an animated GIF instead of an MP4 (video only, 15 fps).
     pub gif: bool,
+    /// Render audio only (CapCut's audio export): codec follows the
+    /// output extension (.mp3/.wav/.m4a, default AAC in .m4a).
+    pub audio_only: bool,
 }
 
 impl Default for ExportSettings {
     fn default() -> Self {
-        Self { encoder: Encoder::Software, crf: 20, font_file: None, max_height: None, gif: false }
+        Self { encoder: Encoder::Software, crf: 20, font_file: None, max_height: None, gif: false, audio_only: false }
     }
 }
 
@@ -135,7 +138,36 @@ pub fn effect_video_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
         Effect::Mask { .. } => Vec::new(),    // rendered via the alpha matte
         Effect::Stabilize { .. } => Vec::new(), // needs the detect-pass transforms (render())
         Effect::PitchShift { .. } => Vec::new(), // audio-only effect
+        Effect::Loudnorm { .. } => Vec::new(),  // audio-only effect
         Effect::Lut { ref path } => vec![format!("lut3d=file='{}'", path.replace('\'', "\\'"))],
+        Effect::VideoDenoise { strength } => {
+            let s = strength.clamp(0.0, 1.0);
+            vec![format!("hqdn3d={:.1}:{:.1}:{:.1}:{:.1}", 2.0 + s * 8.0, 2.0 + s * 8.0, 3.0 + s * 10.0, 3.0 + s * 10.0)]
+        }
+        Effect::Curves { ref master, ref red, ref green, ref blue } => {
+            let mut parts = Vec::new();
+            if !master.is_empty() { parts.push(format!("master='{master}'")); }
+            if !red.is_empty() { parts.push(format!("red='{red}'")); }
+            if !green.is_empty() { parts.push(format!("green='{green}'")); }
+            if !blue.is_empty() { parts.push(format!("blue='{blue}'")); }
+            if parts.is_empty() { Vec::new() } else { vec![format!("curves={}", parts.join(":"))] }
+        }
+        Effect::ColorWheels { shadows, midtones, highlights } => {
+            let f = |v: &[f64; 3]| {
+                format!(
+                    "{:.2}:{:.2}:{:.2}",
+                    v[0].clamp(-1.0, 1.0), v[1].clamp(-1.0, 1.0), v[2].clamp(-1.0, 1.0)
+                )
+            };
+            let (s, m, h) = (f(&shadows), f(&midtones), f(&highlights));
+            let sp: Vec<&str> = s.split(':').collect();
+            let mp: Vec<&str> = m.split(':').collect();
+            let hp: Vec<&str> = h.split(':').collect();
+            vec![format!(
+                "colorbalance=rs={}:gs={}:bs={}:rm={}:gm={}:bm={}:rh={}:gh={}:bh={}",
+                sp[0], sp[1], sp[2], mp[0], mp[1], mp[2], hp[0], hp[1], hp[2]
+            )]
+        }
     }
 }
 
@@ -285,6 +317,9 @@ pub fn effect_audio_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
         Effect::PitchShift { semitones } => {
             let ratio = 2f64.powf(semitones.clamp(-12.0, 12.0) / 12.0);
             vec![format!("rubberband=pitch={ratio:.4}")]
+        }
+        Effect::Loudnorm { target_lufs } => {
+            vec![format!("loudnorm=I={:.1}:TP=-1.5:LRA=11", target_lufs.clamp(-24.0, -5.0))]
         }
         _ => Vec::new(),
     }
@@ -439,6 +474,29 @@ pub fn build_ffmpeg_args_stabilized(
             let ainputs: String = (0..segs.len()).map(|j| format!("[ab{i}s{j}]")).collect();
             filters.push(format!("{vinputs}concat=n={}:v=1:a=0[vb{i}]", segs.len()));
             filters.push(format!("{ainputs}concat=n={}:v=0:a=1[ab{i}]", segs.len()));
+        } else if project.canvas_fill == "blur" {
+            // Canvas blur fill: an enlarged, cropped, heavily blurred copy
+            // fills the frame behind the fitted clip.
+            let base = format!(
+                "trim=start={:.3}:end={:.3},setpts=(PTS-STARTPTS)/{:.3}",
+                clip.in_sec, clip.out_sec, clip.speed.max(0.01)
+            );
+            filters.push(format!("[{i}:v]{base},split=2[vb{i}bg][vb{i}fg]"));
+            filters.push(format!(
+                "[vb{i}bg]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},gblur=sigma=30,setsar=1[vb{i}bgb]"
+            ));
+            filters.push(format!(
+                "[vb{i}fg]scale={w}:{h}:force_original_aspect_ratio=decrease,setsar=1[vb{i}fgb]"
+            ));
+            filters.push(format!("[vb{i}bgb][vb{i}fgb]overlay=(W-w)/2:(H-h)/2[vb{i}]"));
+            let achain = vec![
+                format!("atrim=start={:.3}:end={:.3}", clip.in_sec, clip.out_sec),
+                "asetpts=PTS-STARTPTS".to_string(),
+                format!("atempo={:.3}", clip.speed.clamp(0.5, 2.0)),
+                "aresample=48000".to_string(),
+                format!("volume={:.2}", clip.volume.clamp(0.0, 2.0)),
+            ];
+            filters.push(format!("[{i}:a]{}[ab{i}]", achain.join(",")));
         } else {
             let mut vchain = vec![
                 format!("trim=start={:.3}:end={:.3}", clip.in_sec, clip.out_sec),
@@ -604,9 +662,19 @@ pub fn build_ffmpeg_args_stabilized(
         current = next;
     }
 
-    // Text overlays on top of the merged video.
+    // Text overlays on top of the merged video. When the caller did not
+    // provide a font, discover a system font so captions actually render
+    // (desktop, agent and CLI exports alike).
     let mut current = current;
-    if let Some(font) = &settings.font_file {
+    let discovered_font;
+    let font = match &settings.font_file {
+        Some(f) => Some(f),
+        None => {
+            discovered_font = default_system_font();
+            discovered_font.as_ref()
+        }
+    };
+    if let Some(font) = &font {
         let text_track = project.tracks.iter().find(|t| t.kind == TrackKind::Text);
         if let Some(track) = text_track {
             for (j, clip) in track.clips.iter().enumerate() {
@@ -664,8 +732,30 @@ pub fn build_ffmpeg_args_stabilized(
         }
     }
 
+    // Audio-only export: terminate the video chain in a sink so the
+    // filtergraph has no dangling outputs.
+    if settings.audio_only {
+        filters.push(format!("[{video_out}]nullsink"));
+    }
+
     args.push("-filter_complex".into());
     args.push(filters.join(";"));
+    if settings.audio_only {
+        args.push("-map".into());
+        args.push(format!("[{audio_label}]"));
+        let out_name = output.to_string_lossy().to_lowercase();
+        let codec = if out_name.ends_with(".mp3") {
+            "libmp3lame"
+        } else if out_name.ends_with(".wav") {
+            "pcm_s16le"
+        } else {
+            "aac"
+        };
+        args.push("-c:a".into());
+        args.push(codec.into());
+        args.push(output.display().to_string());
+        return Ok(args);
+    }
     args.push("-map".into());
     args.push(format!("[{video_out}]"));
     if settings.gif {
@@ -691,6 +781,33 @@ pub fn build_ffmpeg_args_stabilized(
     }
     args.push(output.display().to_string());
     Ok(args)
+}
+
+/// Best-effort system font for drawtext when the caller set none:
+/// NIGHTCUT_FONT wins, then common platform paths, then `fc-match`.
+pub fn default_system_font() -> Option<PathBuf> {
+    if let Ok(f) = std::env::var("NIGHTCUT_FONT") {
+        let p = PathBuf::from(f);
+        if p.exists() { return Some(p); }
+    }
+    let candidates: &[&str] = &[
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "C:\\Windows\\Fonts\\arialbd.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/Library/Fonts/Arial Bold.ttf",
+    ];
+    for c in candidates {
+        let p = PathBuf::from(c);
+        if p.exists() { return Some(p); }
+    }
+    let out = Command::new("fc-match").args(["-f", "%{file}", "sans:bold"]).output().ok()?;
+    let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string());
+    if p.exists() { Some(p) } else { None }
 }
 
 /// Run the vidstab *detect* pass for every clip that asks for
@@ -1236,6 +1353,53 @@ mod tests {
         let out = dir.join("out-transition.mp4");
         render(&p, &sources, &out, &ExportSettings::default()).unwrap();
         assert!(out.metadata().unwrap().len() > 10_000);
+    }
+
+    /// LIVE: canvas blur fill + audio-only MP3 + grade/loudnorm chain.
+    #[test]
+    #[ignore]
+    fn live_wave8_render_paths() {
+        use std::collections::BTreeMap as Map;
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Own source file: the shared src.mp4 is regenerated by sibling
+        // tests running in parallel.
+        let src = dir.join("src-wave8.mp4");
+        let ok = Command::new("ffmpeg")
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=30",
+                   "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                   "-c:v", "libx264", "-c:a", "aac", "-shortest"])
+            .arg(&src).status().unwrap().success();
+        assert!(ok);
+        let mut clip = editor_core::Clip::new("c1", "src", 0.0, 2.0, 0.0);
+        clip.effects = vec![
+            editor_core::Effect::Loudnorm { target_lufs: -14.0 },
+            editor_core::Effect::Curves {
+                master: "0/0 0.5/0.6 1/1".into(), red: String::new(),
+                green: String::new(), blue: String::new(),
+            },
+            editor_core::Effect::ColorWheels {
+                shadows: [0.1, 0.0, -0.1], midtones: [0.0; 3], highlights: [-0.05, 0.0, 0.05],
+            },
+            editor_core::Effect::VideoDenoise { strength: 0.5 },
+        ];
+        let mut project = editor_core::Project::default();
+        project.canvas.width = 240;
+        project.canvas.height = 320;
+        project.canvas_fill = "blur".into();
+        project.tracks[0].clips = vec![clip];
+        let mut sources = Map::new();
+        sources.insert("c1".to_string(), src.clone());
+        let out = dir.join("out-blur.mp4");
+        render(&project, &sources, &out, &ExportSettings::default()).unwrap();
+        assert!(out.metadata().unwrap().len() > 20_000, "blur render too small");
+
+        let mp3 = dir.join("out-audio.mp3");
+        let settings = ExportSettings { audio_only: true, ..Default::default() };
+        render(&project, &sources, &mp3, &settings).unwrap();
+        let bytes = std::fs::read(&mp3).unwrap();
+        assert!(bytes.len() > 5_000, "mp3 too small");
+        assert!(&bytes[0..3] == b"ID3" || (bytes[0] == 0xFF && bytes[1] & 0xE0 == 0xE0), "not an mp3 stream");
     }
 
     /// Live end-to-end render with a generated test clip — ignored by

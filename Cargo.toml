@@ -4,6 +4,7 @@ members = [
     "crates/editor-core",
     "crates/media-engine",
     "crates/export-engine",
+    "crates/agent-server",
 ]
 # apps/desktop/src-tauri is its own workspace (see its Cargo.toml) so the
 # lightweight core test suite never has to build Tauri/WebKit system deps.

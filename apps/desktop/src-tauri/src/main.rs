@@ -45,6 +45,22 @@ fn detect_beats(path: String) -> Result<String, String> {
     Ok(serde_json::json!({ "beats": beats, "bpm": bpm }).to_string())
 }
 
+/// Scene detection: { scenes: number[] } as JSON.
+#[tauri::command]
+fn detect_scenes(path: String, threshold: f64) -> Result<String, String> {
+    let scenes = media_engine::detect_scenes(std::path::Path::new(&path), threshold)
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "scenes": scenes }).to_string())
+}
+
+/// Silence detection: { silences: [[start, end], ...] } as JSON.
+#[tauri::command]
+fn detect_silences(path: String) -> Result<String, String> {
+    let ranges = media_engine::detect_silences(std::path::Path::new(&path), -35.0, 0.5)
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "silences": ranges }).to_string())
+}
+
 fn find_onnx_files() -> Option<(PathBuf, PathBuf)> {
     let model_names = ["libonnxruntime.so", "onnxruntime.dll", "libonnxruntime.dylib"];
     let dirs = [
@@ -95,6 +111,7 @@ fn export_video(
     output: String,
     max_height: Option<u32>,
     gif: Option<bool>,
+    audio_only: Option<bool>,
 ) -> Result<String, String> {
     let project: editor_core::Project =
         serde_json::from_str(&project_json).map_err(|e| e.to_string())?;
@@ -104,6 +121,7 @@ fn export_video(
         encoder: export_engine::Encoder::preferred_for_os(),
         max_height,
         gif: gif.unwrap_or(false),
+        audio_only: audio_only.unwrap_or(false),
         ..Default::default()
     };
     // Hardware encoders are best-effort: fall back to software on failure.
@@ -199,7 +217,7 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             probe_media, make_proxy, waveform, export_video, pick_media_files, auto_captions,
-            text_to_speech, detect_beats, track_motion, remove_background
+            text_to_speech, detect_beats, detect_scenes, detect_silences, track_motion, remove_background
         ])
         .run(tauri::generate_context!())
         .expect("error while running NightCut");

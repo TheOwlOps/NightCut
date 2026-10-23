@@ -8,6 +8,9 @@ import {
   TRANSITION_PRESETS,
   Effect,
   newId,
+  splitClip,
+  Clip,
+  Project,
 } from "../../lib/project";
 
 /** Tile icons for the Effects library grid. */
@@ -16,6 +19,8 @@ const EFFECT_ICONS: Partial<Record<Effect["type"], string>> = {
   vignette: "◉", temperature: "🌡", mirror: "🪞", invert: "◑",
   fade_in: "↗", fade_out: "↘", reverse: "⏪", chroma_key: "🟢",
   denoise: "🔇", mask: "🎭", stabilize: "🎯",
+  pitch_shift: "🎤", lut: "🎞", loudnorm: "🔊", video_denoise: "✨",
+  curves: "📈", color_wheels: "🎡",
 };
 
 const STICKERS = ["🔥", "❤️", "😂", "🎉", "⭐", "👍", "💯", "🚀", "🎬", "🎵", "⚡", "🌙", "✅", "❌", "➡️", "💥"];
@@ -461,6 +466,7 @@ function CaptionsPanel() {
       </div>
       {isTauri() ? (
         <>
+          <SceneTools setMsg={setMsg} />
           <button className="primary" disabled={busy} onClick={() => void autoCaptions()}>
             {busy ? "Transcribing…" : "✨ Auto captions (whisper.cpp, local)"}
           </button>
@@ -475,6 +481,109 @@ function CaptionsPanel() {
           no cloud upload like CapCut.
         </p>
       )}
+    </div>
+  );
+}
+
+/** Scene split + silence cutting for the first video clip (desktop only). */
+function SceneTools({ setMsg }: { setMsg: (m: string) => void }) {
+  const project = useEditor((s) => s.project);
+  const media = useEditor((s) => s.media);
+  const loadProject = useEditor((s) => s.loadProject);
+  const [busy, setBusy] = useState(false);
+
+  const firstVideo = () => {
+    const track = project.tracks.find((t) => t.id === "track-video");
+    const clip = track?.clips.find((c) => c.source);
+    const item = media.find((m) => m.path && (m.path === clip?.source || m.name === clip?.source));
+    return clip && item?.path ? { clip, path: item.path } : null;
+  };
+
+  const splitScenes = async () => {
+    const found = firstVideo();
+    if (!found) return setMsg("Scene tools need a desktop-imported clip on the video track.");
+    setBusy(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const raw = await invoke<string>("detect_scenes", { path: found.path, threshold: 0.4 });
+      const scenes = (JSON.parse(raw) as { scenes: number[] }).scenes;
+      const inside = scenes.filter(
+        (t) => t > found.clip.inSec + 0.05 && t < found.clip.outSec - 0.05,
+      );
+      if (!inside.length) return setMsg("No scene changes detected in the first video clip.");
+      let next: Project = project;
+      // Split from the last cut backwards so earlier ids stay valid.
+      for (const t of [...inside].sort((a, b) => b - a)) {
+        const at = found.clip.timelineStart + (t - found.clip.inSec) / Math.max(0.01, found.clip.speed);
+        next = splitClip(next, "track-video", found.clip.id, at) ?? next;
+      }
+      loadProject(next);
+      setMsg(`Split the first clip at ${inside.length} scene change(s).`);
+    } catch (err) {
+      setMsg(`Scene detection failed: ${String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cutSilences = async () => {
+    const found = firstVideo();
+    if (!found) return setMsg("Scene tools need a desktop-imported clip on the video track.");
+    setBusy(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const raw = await invoke<string>("detect_silences", { path: found.path });
+      const silences = (JSON.parse(raw) as { silences: [number, number][] }).silences;
+      const { clip } = found;
+      // Kept segments of the clip with silences (in source time) removed.
+      const kept: [number, number][] = [];
+      let cursor = clip.inSec;
+      for (const [s, e] of silences) {
+        if (e <= clip.inSec || s >= clip.outSec) continue;
+        const cs = Math.max(s, clip.inSec);
+        const ce = Math.min(e, clip.outSec);
+        if (cs > cursor) kept.push([cursor, cs]);
+        cursor = Math.max(cursor, ce);
+      }
+      if (cursor < clip.outSec) kept.push([cursor, clip.outSec]);
+      if (!kept.length || (kept.length === 1 && kept[0][0] === clip.inSec && kept[0][1] === clip.outSec)) {
+        return setMsg("No silences long enough to cut in the first clip.");
+      }
+      const next = structuredClone(project);
+      const track = next.tracks.find((t) => t.id === "track-video")!;
+      const idx = track.clips.findIndex((c) => c.id === clip.id);
+      const base: Clip = track.clips[idx];
+      const rebuilt: Clip[] = [];
+      let at = clip.timelineStart;
+      kept.forEach(([s, e], i) => {
+        const c: Clip = {
+          ...structuredClone(base),
+          id: i === 0 ? base.id : newId("clip"),
+          inSec: s,
+          outSec: e,
+          timelineStart: at,
+          speedCurve: undefined,
+          keyframes: undefined,
+          freezeDuration: undefined,
+        };
+        at += (e - s) / Math.max(0.01, clip.speed);
+        rebuilt.push(c);
+      });
+      track.clips.splice(idx, 1, ...rebuilt);
+      loadProject(next);
+      setMsg(`Cut ${silences.length} silent range(s) — clip is now ${rebuilt.length} segment(s).`);
+    } catch (err) {
+      setMsg(`Silence detection failed: ${String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="field">
+      <span>Smart cut (first video clip)</span>
+      <button disabled={busy} onClick={() => void splitScenes()}>🎬 Split at scene changes</button>
+      <button disabled={busy} onClick={() => void cutSilences()}>✂️ Cut silences (jump cut)</button>
     </div>
   );
 }

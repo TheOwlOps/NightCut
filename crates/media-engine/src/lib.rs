@@ -282,6 +282,99 @@ pub fn beat_track(samples: &[f32], sample_rate: u32) -> (Vec<f64>, f64) {
     (beats, bpm)
 }
 
+/// Scene-change detection (CapCut Split Scenes): runs FFmpeg's scene
+/// scoring over thumbnails and returns cut times (seconds, excluding 0)
+/// where the score passes `threshold` (0..1, 0.4 is a sane default).
+pub fn detect_scenes(path: &Path, threshold: f64) -> Result<Vec<f64>> {
+    let out = Command::new("ffmpeg")
+        .args(["-v", "info", "-i"])
+        .arg(path)
+        .args(["-vf", &format!("select='gt(scene,{threshold:.2})',metadata=print:file=-"), "-f", "null", "-"])
+        .output()?;
+    let text = String::from_utf8_lossy(&out.stderr).to_string()
+        + &String::from_utf8_lossy(&out.stdout);
+    Ok(parse_scene_times(&text))
+}
+
+/// Parse an SRT subtitle document into caption cues.
+pub fn parse_srt(text: &str) -> Vec<CaptionCue> {
+    fn ts(s: &str) -> f64 {
+        // 00:01:02,500 -> seconds
+        let parts: Vec<&str> = s.trim().split([':', ',']).collect();
+        if parts.len() == 4 {
+            let h: f64 = parts[0].parse().unwrap_or(0.0);
+            let m: f64 = parts[1].parse().unwrap_or(0.0);
+            let sec: f64 = parts[2].parse().unwrap_or(0.0);
+            let ms: f64 = parts[3].parse().unwrap_or(0.0);
+            h * 3600.0 + m * 60.0 + sec + ms / 1000.0
+        } else {
+            0.0
+        }
+    }
+    let mut cues = Vec::new();
+    for block in text.replace("\r\n", "\n").split("\n\n") {
+        let mut lines = block.lines().filter(|l| !l.trim().is_empty());
+        let _ = lines.next(); // index line (may be the timing line itself)
+        let timing = block.lines().find(|l| l.contains("-->"));
+        let Some(timing) = timing else { continue };
+        let mut it = timing.split("-->");
+        let (Some(a), Some(b)) = (it.next(), it.next()) else { continue };
+        let body: Vec<&str> = block.lines().skip_while(|l| !l.contains("-->")).skip(1).collect();
+        if body.is_empty() { continue; }
+        let _ = lines;
+        cues.push(CaptionCue { start: ts(a), end: ts(b), text: body.join(" ") });
+    }
+    cues
+}
+
+/// Parse `pts_time:` values out of ffmpeg metadata=print output.
+pub fn parse_scene_times(text: &str) -> Vec<f64> {
+    let mut times: Vec<f64> = Vec::new();
+    for line in text.lines() {
+        if let Some(idx) = line.find("pts_time:") {
+            let rest = &line[idx + "pts_time:".len()..];
+            let num: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            if let Ok(t) = num.parse::<f64>() {
+                if t > 0.05 { times.push(t); }
+            }
+        }
+    }
+    times.sort_by(|a, b| a.total_cmp(b));
+    times.dedup_by(|a, b| (*a - *b).abs() < 0.05);
+    times
+}
+
+/// Silence detection (CapCut remove pauses / jump cuts): returns
+/// (start, end) silent ranges via FFmpeg silencedetect.
+pub fn detect_silences(path: &Path, noise_db: f64, min_duration: f64) -> Result<Vec<(f64, f64)>> {
+    let out = Command::new("ffmpeg")
+        .args(["-v", "info", "-i"])
+        .arg(path)
+        .args(["-af", &format!("silencedetect=noise={noise_db:.1}dB:d={min_duration:.2}"), "-f", "null", "-"])
+        .output()?;
+    let text = String::from_utf8_lossy(&out.stderr);
+    Ok(parse_silences(&text))
+}
+
+/// Parse silencedetect start/end pairs from ffmpeg stderr.
+pub fn parse_silences(text: &str) -> Vec<(f64, f64)> {
+    let mut ranges = Vec::new();
+    let mut pending: Option<f64> = None;
+    for line in text.lines() {
+        if let Some(idx) = line.find("silence_start:") {
+            let num: String = line[idx + 15..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            pending = num.parse().ok();
+        } else if let Some(idx) = line.find("silence_end:") {
+            let num: String = line[idx + 13..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            if let (Some(s), Ok(e)) = (pending, num.parse::<f64>()) {
+                ranges.push((s, e));
+                pending = None;
+            }
+        }
+    }
+    ranges
+}
+
 /// One tracked position: time (s, source-relative) and normalized frame
 /// coordinates of the tracked patch center (0..1).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -621,6 +714,14 @@ mod tests {
         let (center, corner) = (px(160, 120), px(4, 4));
         assert!(center > 150, "subject should stay bright, got {center}");
         assert!(corner < 60, "background should be removed to black, got {corner}");
+    }
+
+    #[test]
+    fn scene_and_silence_parsers() {
+        let scene_log = "frame:1 pts:100 pts_time:2.5\nframe:2 pts:200 pts_time:5.0\n";
+        assert_eq!(parse_scene_times(scene_log), vec![2.5, 5.0]);
+        let sil_log = "[silencedetect] silence_start: 1.25\n[silencedetect] silence_end: 3.5 | silence_duration: 2.25\n";
+        assert_eq!(parse_silences(sil_log), vec![(1.25, 3.5)]);
     }
 
     #[test]
