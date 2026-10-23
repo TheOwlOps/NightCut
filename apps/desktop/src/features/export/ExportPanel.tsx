@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditor } from "../../store/editor";
 import { buildFfmpegCommand, toRustJson } from "../../lib/project";
 
@@ -13,6 +13,19 @@ export default function ExportPanel({ open, onClose }: { open: boolean; onClose:
   const project = useEditor((s) => s.project);
   const loadProject = useEditor((s) => s.loadProject);
   const [output, setOutput] = useState("nightcut-export.mp4");
+  const outputTouched = useRef(false);
+  // Default the output file name from the project name (CapCut behavior),
+  // until the user edits the field manually.
+  useEffect(() => {
+    if (open && !outputTouched.current) {
+      const slug = (project.name ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      setOutput(slug ? `${slug}.mp4` : "nightcut-export.mp4");
+    }
+  }, [open, project.name]);
   const [maxHeight, setMaxHeight] = useState<number>(0); // 0 = original
   const [format, setFormat] = useState<"mp4" | "gif" | "mp3">("mp4");
   const gif = format === "gif";
@@ -26,7 +39,8 @@ export default function ExportPanel({ open, onClose }: { open: boolean; onClose:
     const blob = new Blob([toRustJson(project)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "project.nightcut.json";
+    const slug = (project.name ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    a.download = slug ? `${slug}.nightcut.json` : "project.nightcut.json";
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -65,7 +79,7 @@ export default function ExportPanel({ open, onClose }: { open: boolean; onClose:
         <h2>Export</h2>
         <label className="field">
           <span>Output file</span>
-          <input value={output} onChange={(e) => setOutput(e.target.value)} />
+          <input value={output} onChange={(e) => { outputTouched.current = true; setOutput(e.target.value); }} />
         </label>
         <div className="row">
           <label className="field" style={{ flex: 1 }}>

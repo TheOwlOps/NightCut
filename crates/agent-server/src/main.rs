@@ -69,6 +69,7 @@ fn tool_call(state: &State, name: &str, args: &Value) -> ToolResult {
     match name {
         "nightcut_project_new" => {
             *p = Project::default();
+            if let Some(name) = str_of("name") { p.name = name.to_string(); }
             if let (Some(w), Some(h)) = (f64_of("width"), f64_of("height")) {
                 p.canvas.width = w as u32;
                 p.canvas.height = h as u32;
@@ -96,6 +97,7 @@ fn tool_call(state: &State, name: &str, args: &Value) -> ToolResult {
                 })
             }).collect();
             Ok(json!({
+                "name": p.name,
                 "canvas": { "width": p.canvas.width, "height": p.canvas.height, "fps": p.canvas.fps },
                 "duration": p.duration(), "markers": p.markers, "tracks": tracks,
             }))
@@ -327,7 +329,7 @@ fn tools_list() -> Value {
     let n = |d: &str| json!({ "type": "number", "description": d });
     let b = |d: &str| json!({ "type": "boolean", "description": d });
     json!([
-        t("nightcut_project_new", "Start a fresh project (optionally with canvas width/height).", json!({ "width": n("canvas width"), "height": n("canvas height") }), &[]),
+        t("nightcut_project_new", "Start a fresh project (optionally with a name and canvas width/height).", json!({ "name": s("project name"), "width": n("canvas width"), "height": n("canvas height") }), &[]),
         t("nightcut_project_open", "Load a project JSON file (editor-core format, same as the desktop app).", json!({ "path": s("project file path") }), &["path"]),
         t("nightcut_project_save", "Save the current project as JSON.", json!({ "path": s("destination path") }), &["path"]),
         t("nightcut_project_info", "Describe the current project: canvas, duration, markers, tracks and clips.", json!({}), &[]),

@@ -405,6 +405,8 @@ export interface Track {
 
 export interface Project {
   version: number;
+  /** Display name, editable in the top bar (CapCut-style). */
+  name?: string;
   canvas: { width: number; height: number; fps: number };
   tracks: Track[];
   /** Timeline markers (seconds) — beat detection results. */
@@ -426,6 +428,7 @@ export function projectDuration(p: Project): number {
 export function emptyProject(): Project {
   return {
     version: 1,
+    name: "Untitled project",
     canvas: { width: 1080, height: 1920, fps: 30 },
     tracks: [
       { id: "track-video", kind: "video", clips: [] },
@@ -469,6 +472,7 @@ export function toRustJson(p: Project): string {
   return JSON.stringify(
     {
       version: p.version,
+      ...(p.name ? { name: p.name } : {}),
       canvas: p.canvas,
       tracks: p.tracks.map((t) => ({
         id: t.id,

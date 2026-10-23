@@ -147,7 +147,14 @@ input[type="color"] { cursor: pointer; }
   background: linear-gradient(180deg, var(--bg-panel-2), var(--bg-panel));
   border-right: 1px solid var(--border);
 }
-.rail { display: flex; flex-direction: column; gap: 4px; padding: 10px 6px; border-right: 1px solid var(--border); width: 70px; flex: none; }
+.rail { display: flex; flex-direction: column; gap: 4px; padding: 10px 6px; border-right: 1px solid var(--border); width: 76px; flex: none; }
+.project-name {
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  color: var(--text); font-size: 13.5px; font-weight: 600; padding: 5px 9px;
+  width: 220px; outline: none; transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.project-name:hover { border-color: var(--border-strong); }
+.project-name:focus { border-color: rgba(0, 224, 189, 0.55); background: rgba(255, 255, 255, 0.04); }
 .rail-btn {
   position: relative;
   display: flex; flex-direction: column; align-items: center; gap: 3px;
@@ -384,7 +391,7 @@ input[type="color"] { cursor: pointer; }
 .clip:active { cursor: grabbing; }
 .clip-video { background: linear-gradient(180deg, #2f5a8a, #234a75 55%, #1f4066); }
 .clip-audio { background: linear-gradient(180deg, #1a6b3c, #14532d 55%, #0f4423); }
-.clip-text { background: linear-gradient(180deg, #5d4ba6, #4c3d86 55%, #403370); justify-content: center; }
+.clip-text { background: linear-gradient(180deg, #f5a623, #f39c12 55%, #e8890c); justify-content: center; }
 .clip.selected {
   outline: 2px solid #fff; outline-offset: -1px;
   box-shadow: 0 0 0 4px rgba(0, 224, 189, 0.4), 0 0 22px rgba(0, 224, 189, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.2);

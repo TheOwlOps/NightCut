@@ -289,6 +289,9 @@ impl Track {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub version: u32,
+    /// Display name (CapCut shows it top-left in the editor, editable).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     #[serde(default)]
     pub canvas: Canvas,
     #[serde(default)]
@@ -308,6 +311,7 @@ impl Default for Project {
     fn default() -> Self {
         Self {
             version: 1,
+            name: String::new(),
             canvas: Canvas::default(),
             tracks: vec![
                 Track::new("track-video", TrackKind::Video),
@@ -562,5 +566,18 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn project_name_roundtrip_and_legacy_default() {
+        let mut p = project_with_clip();
+        p.name = "My video".into();
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"name\":\"My video\""));
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "My video");
+        // Projects saved before the name field existed still load.
+        let legacy: Project = serde_json::from_str("{\"version\":1}").unwrap();
+        assert_eq!(legacy.name, "");
     }
 }

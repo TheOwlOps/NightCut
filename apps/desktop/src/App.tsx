@@ -8,7 +8,7 @@ import { useEditor } from "./store/editor";
 import { Project } from "./lib/project";
 
 export default function App() {
-  const { undo, redo, loadProject } = useEditor();
+  const { undo, redo, loadProject, project, setProjectName } = useEditor();
   const [exportOpen, setExportOpen] = useState(false);
   const openRef = useRef<HTMLInputElement>(null);
 
@@ -68,8 +68,14 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <img src="/logo.svg" alt="" className="topbar-logo" />
-        <strong>NightCut</strong>
-        <span className="topbar-sub">open-source video editor</span>
+        <input
+          className="project-name"
+          value={project.name ?? ""}
+          placeholder="Untitled project"
+          onChange={(e) => setProjectName(e.target.value)}
+          title="Project name — used as the export file name"
+          aria-label="Project name"
+        />
         <span className="spacer" />
         <button onClick={() => openRef.current?.click()}>Open project</button>
         <input

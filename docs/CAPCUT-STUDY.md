@@ -54,3 +54,44 @@ names are learned, everything is implemented from scratch on FFmpeg/Rust.
 - Feature roundups — keyframes, chroma key, speed ramping/curve, captions,
   freeze, reverse, filters/LUT/HSL, SRT import/export, beat sync:
   techspot.com, magnushelander.se
+
+## Measured reference — CapCut WEB editor (live capture, 2026-10-23)
+
+Captured by driving the real editor as a guest at capcut.com/editor
+(the Windows desktop build could not be run here: its installer is a
+2.9 MB NSIS stub that fetches the payload from a signed API, and Wine
+cannot execute 32-bit PEs on this VM's kernel). The web editor shares
+the desktop design language; the desktop app is the dark variant of
+the same layout.
+
+- Entry: /editor opens straight into a blank project as guest (a
+  sign-in modal may overlay; closing it allows full guest editing).
+- Top bar (~48px): editable project name top-left (pencil icon);
+  center: zoom % dropdown flanked by undo/redo; top-right: blue
+  Export button + "..." menu.
+- Left block is one dark unit (#17171a): icon rail ~90px + content
+  panel ~300px. Rail order: Media, Template, Elements, Audio, Text,
+  Captions, Transcript, Effects, Transitions, Filters, Brand kit,
+  Plugins. (Desktop trims this list; NightCut's 9 tabs match the
+  desktop set.)
+- Preview surround light gray (#e9e9e9) in web / near-black in
+  desktop; canvas shows a "Ratio" button + aspect badge.
+- Right inspector (~290px) appears when an element is selected, with
+  a far-right vertical icon tab strip (Presets, Basic, Animation…).
+  Text Basic: font dropdown, size, B/I/U, alignment, Fill / Stroke /
+  Background / Shadow / Glow rows.
+- Timeline (~225px): toolbar (split, delete, download | centered
+  round play button + "current | total" timecode | keyframe diamond,
+  zoom slider, fullscreen, PiP), ruler, tracks. Track headers carry
+  lock / edit / kind icons.
+- Clip color coding: TEXT clips are ORANGE (#ff9500 family) with a
+  cyan selection border; playhead is a dark line with a teardrop
+  handle in web (white in desktop).
+- Panels use sub-tabs with a cyan underline (Text templates | Text
+  effects; Video effects | Body effects), a search box, filter chips,
+  and content rows of 5 thumbnail cards with "View all".
+
+Applied in NightCut Wave 11: editable project name in the top bar
+(also seeds the export file name and the project download name),
+orange text clips, 76px rail. Wave 10 had already matched: SVG rail
+icons, timeline icon toolbar with undo/redo, Export top-right.

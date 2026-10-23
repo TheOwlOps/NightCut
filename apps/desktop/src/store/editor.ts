@@ -72,6 +72,7 @@ interface EditorState {
   addKeyframeAtPlayhead: () => void;
   /** Set beat markers (seconds) — view/edit state, no history entry. */
   setMarkers: (markers: number[]) => void;
+  setProjectName: (name: string) => void;
   /** Apply a named animation preset (keyframes) to the selected clip. */
   applyAnimationPreset: (name: string) => void;
   setSelectedSmoothSlowmo: (on: boolean) => void;
@@ -486,6 +487,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   setMarkers: (markers) => set({ project: { ...get().project, markers } }),
+  setProjectName: (name: string) => set({ project: { ...get().project, name } }),
 
   addOverlayClip: (mediaId) => {
     const s = get();
