@@ -294,13 +294,65 @@ fn tool_call(state: &State, name: &str, args: &Value) -> ToolResult {
             media_engine::remove_background(&src, &out, &model, &dylib).map_err(|e| e.to_string())?;
             Ok(json!({ "ok": true, "output": out.to_string_lossy() }))
         }
+        "nightcut_compound_create" => {
+            let ids: Vec<String> = args.get("clipIds").and_then(|v| v.as_array())
+                .ok_or("missing clipIds")?
+                .iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+            if ids.is_empty() { return Err("clipIds is empty".into()); }
+            let name = str_of("name").unwrap_or_else(|| "Compound".to_string());
+            // Gather the chosen clips with their tracks.
+            let mut chosen: Vec<(String, editor_core::Clip)> = Vec::new();
+            for t in &p.tracks {
+                for c in &t.clips {
+                    if ids.contains(&c.id) { chosen.push((t.id.clone(), c.clone())); }
+                }
+            }
+            if chosen.is_empty() { return Err("no matching clips".into()); }
+            let min_start = chosen.iter().map(|(_, c)| c.timeline_start).fold(f64::MAX, f64::min);
+            let max_end = chosen.iter().map(|(_, c)| c.timeline_end()).fold(0.0, f64::max);
+            let track_ids: Vec<String> = chosen.iter().map(|(t, _)| t.clone())
+                .collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+            let mut sub = editor_core::Project {
+                canvas: p.canvas.clone(),
+                compounds: p.compounds.clone(),
+                ..Default::default()
+            };
+            sub.tracks = track_ids.iter().map(|tid| {
+                let kind = p.tracks.iter().find(|t| &t.id == tid).map(|t| t.kind).unwrap_or(editor_core::TrackKind::Video);
+                let mut track = editor_core::Track::new(tid.clone(), kind);
+                track.clips = chosen.iter().filter(|(t, _)| t == tid)
+                    .map(|(_, c)| { let mut c = c.clone(); c.timeline_start -= min_start; c })
+                    .collect();
+                track
+            }).collect();
+            let def_id = next_id("cmp");
+            p.compounds.push(editor_core::CompoundDef { id: def_id.clone(), name: name.clone(), project: Box::new(sub) });
+            for t in p.tracks.iter_mut() {
+                t.clips.retain(|c| !ids.contains(&c.id));
+            }
+            let mut cc = Clip::new(next_id("clip"), name.clone(), 0.0, max_end - min_start, min_start);
+            cc.compound_id = Some(def_id);
+            let id = cc.id.clone();
+            p.add_clip("track-video", cc).map_err(|e| e.to_string())?;
+            Ok(json!({ "ok": true, "clipId": id, "compound": name }))
+        }
         "nightcut_export" => {
             let output = str_of("output").ok_or("missing output")?;
             let mut sources: BTreeMap<String, PathBuf> = BTreeMap::new();
             for t in &p.tracks {
                 for c in &t.clips {
-                    if !c.source.is_empty() && c.text.is_none() {
+                    if !c.source.is_empty() && c.text.is_none() && c.compound_id.is_none() {
                         sources.insert(c.id.clone(), PathBuf::from(&c.source));
+                    }
+                }
+            }
+            // Compound sub-projects resolve their clips from the same map.
+            for def in &p.compounds {
+                for t in &def.project.tracks {
+                    for c in &t.clips {
+                        if !c.source.is_empty() && c.text.is_none() && c.compound_id.is_none() {
+                            sources.insert(c.id.clone(), PathBuf::from(&c.source));
+                        }
                     }
                 }
             }
@@ -356,6 +408,7 @@ fn tools_list() -> Value {
         t("nightcut_clip_split_scenes", "Split a clip at every detected scene change inside it.", json!({ "clipId": s("clip id"), "threshold": n("0..1") }), &["clipId"]),
         t("nightcut_track_motion", "Track the most salient subject in a video segment; returns normalized positions over time.", json!({ "path": s("video path"), "start": n("seconds"), "duration": n("seconds") }), &["path"]),
         t("nightcut_bg_remove", "AI background removal (u2netp ONNX). onnxDir holds libonnxruntime + u2netp.onnx. Writes <name>.nobg.mp4.", json!({ "path": s("video path"), "onnxDir": s("tools/onnx folder") }), &["path", "onnxDir"]),
+        t("nightcut_compound_create", "Group clips into one compound (nested) clip that plays the sub-project.", json!({ "clipIds": { "type": "array", "items": { "type": "string" }, "description": "clip ids to group" }, "name": s("compound name") }), &["clipIds"]),
         t("nightcut_export", "Render the project. Options: maxHeight (e.g. 720), gif (bool), audioOnly (bool; codec by output extension).", json!({ "output": s("output path"), "maxHeight": n("px cap"), "gif": b("GIF output"), "audioOnly": b("audio only") }), &["output"]),
     ])
 }

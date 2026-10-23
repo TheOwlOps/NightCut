@@ -146,6 +146,15 @@ fn track_motion(path: String, start: f64, duration: f64) -> Result<String, Strin
     serde_json::to_string(&points).map_err(|e| e.to_string())
 }
 
+/// App cache dir for compound pre-renders and similar scratch renders.
+#[tauri::command]
+fn nightcut_cache_dir(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.display().to_string())
+}
+
 /// Render a project. `project_json` is the editor-core JSON shape (the same
 /// JSON the web UI downloads as project.nightcut.json).
 #[tauri::command]
@@ -262,7 +271,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             probe_media, make_proxy, waveform, export_video, pick_media_files, auto_captions,
             text_to_speech, detect_beats, detect_scenes, detect_silences, track_motion, remove_background,
-            list_plugins
+            list_plugins, nightcut_cache_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running NightCut");

@@ -43,6 +43,7 @@ Register it with any MCP client, e.g. Claude Code / Claude Desktop:
 | `nightcut_clip_split_scenes` | Split a clip at every scene change |
 | `nightcut_track_motion` | Subject tracking positions over time |
 | `nightcut_bg_remove` | AI background removal (u2netp ONNX; pass `onnxDir`) |
+| `nightcut_compound_create` | Group clips into a compound (nested) clip: `clipIds`, `name` |
 | `nightcut_export` | Render: `output`, `maxHeight`, `gif`, `audioOnly` (MP3/WAV/AAC by extension) |
 
 ## Notes

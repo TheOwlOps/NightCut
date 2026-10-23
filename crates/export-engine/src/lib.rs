@@ -1102,12 +1102,58 @@ pub fn run_stabilize_detect_passes(
 
 /// Render a project to `output` with FFmpeg. Runs the stabilization
 /// detect pass first when any clip requests it.
+/// Render compound clips: each clip with a `compound_id` is first
+/// rendered from its sub-project into a cached temp MP4 (the cache key
+/// hashes the definition, so edits re-render), then the project is
+/// rewritten with that file as the clip's source. Nesting works
+/// because rendering the sub-project goes through `render` again.
+fn expand_compounds(
+    project: &Project,
+    sources: &BTreeMap<String, PathBuf>,
+    settings: &ExportSettings,
+) -> Result<(Project, BTreeMap<String, PathBuf>)> {
+    let has = project.tracks.iter()
+        .flat_map(|t| t.clips.iter())
+        .any(|c| c.compound_id.is_some());
+    if !has {
+        return Ok((project.clone(), sources.clone()));
+    }
+    let mut p = project.clone();
+    let mut srcs = sources.clone();
+    for track in p.tracks.iter_mut() {
+        for clip in track.clips.iter_mut() {
+            let Some(cid) = clip.compound_id.clone() else { continue };
+            let def = project.compounds.iter().find(|d| d.id == cid)
+                .ok_or_else(|| ExportError::UnresolvedSource(format!("compound {cid}")))?;
+            let mut hash: u64 = 0xcbf29ce484222325;
+            let def_json = serde_json::to_string(def).unwrap_or_default();
+            for byte in def_json.bytes() {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            let file = std::env::temp_dir()
+                .join(format!("nightcut-compound-{cid}-{hash:016x}.mp4"));
+            if !file.exists() {
+                // Sub-renders are always plain MP4 at the sub-project's
+                // own canvas; gif/audio-only apply to the outer export.
+                let sub_settings = ExportSettings { gif: false, audio_only: false, ..settings.clone() };
+                render(&def.project, sources, &file, &sub_settings)?;
+            }
+            srcs.insert(clip.id.clone(), file);
+        }
+    }
+    Ok((p, srcs))
+}
+
 pub fn render(
     project: &Project,
     sources: &BTreeMap<String, PathBuf>,
     output: &Path,
     settings: &ExportSettings,
 ) -> Result<PathBuf> {
+    let (project_owned, sources_owned) = expand_compounds(project, sources, settings)?;
+    let project = &project_owned;
+    let sources = &sources_owned;
     let transforms = run_stabilize_detect_passes(project, sources);
     // Probe dimensions for overlay clips with a blend mode (the blend
     // path needs the overlay's exact scaled height).
@@ -1704,6 +1750,51 @@ mod tests {
             if px[2] > 150 && px[1] > 150 && px[0] < 110 { cyan += 1; }
         }
         assert!(cyan > 40, "expected a cyan glow halo, found {cyan} cyan px");
+    }
+
+    /// Live render: a compound clip plays its nested sub-project.
+    #[test]
+    #[ignore]
+    fn renders_compound_clip() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let base_path = dir.join("base-red.mp4");
+        assert!(base_path.exists(), "run an earlier live test first");
+        // Sub-project: the red clip with a SUB title at the top.
+        let mut sub = Project::default();
+        sub.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        sub.tracks[0].clips = vec![Clip::new("c1", "base-red.mp4", 0.0, 2.0, 0.0)];
+        let mut st = Clip::text_clip("st1", "SUB", 0.0, 2.0);
+        st.text_y = Some(0.0);
+        let ti = sub.tracks.iter().position(|t| t.kind == TrackKind::Text).unwrap();
+        sub.tracks[ti].clips = vec![st];
+        // Outer project: one compound clip playing the sub-project.
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        p.compounds = vec![editor_core::CompoundDef {
+            id: "cmp1".to_string(),
+            name: "Intro".to_string(),
+            project: Box::new(sub),
+        }];
+        let mut cc = Clip::new("cc1", "Intro", 0.0, 2.0, 0.0);
+        cc.compound_id = Some("cmp1".to_string());
+        p.tracks[0].clips = vec![cc];
+        let sources = BTreeMap::from([("c1".to_string(), base_path)]);
+        let out = dir.join("compound.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).expect("compound render");
+        let (r2, g2, b2) = {
+            let raw = Command::new("ffmpeg")
+                .args(["-v", "error", "-ss", "1", "-i"]).arg(&out)
+                .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                .output().unwrap();
+            assert!(raw.status.success());
+            let i = (200 * 320 + 20) * 3;
+            let white_top = raw.stdout.chunks_exact(3).take(80 * 320)
+                .filter(|px| px[0] > 200 && px[1] > 200 && px[2] > 200).count();
+            assert!(white_top > 60, "SUB title from the sub-project should render, white px={white_top}");
+            (raw.stdout[i], raw.stdout[i + 1], raw.stdout[i + 2])
+        };
+        assert!(r2 > 180 && g2 < 90 && b2 < 90, "compound base should be red, got {r2},{g2},{b2}");
     }
 
     /// Live render: two text clips at different heights no longer stack.

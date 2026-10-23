@@ -195,6 +195,10 @@ pub struct Clip {
     /// outline in this color behind the glyphs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_glow: Option<String>,
+    /// Compound clip: id of a Project.compounds definition this clip
+    /// plays. `source` is unused for compound clips (display name only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compound_id: Option<String>,
     /// Speed curve; when present it replaces the constant `speed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed_curve: Option<Vec<SpeedPoint>>,
@@ -241,7 +245,7 @@ impl Clip {
             in_sec, out_sec, timeline_start,
             speed: 1.0, volume: 1.0, text: None, font_size: None,
             effects: Vec::new(), transition_in: None, text_color: None,
-            text_bg: None, text_shadow: false, text_glow: None,
+            text_bg: None, text_shadow: false, text_glow: None, compound_id: None,
             speed_curve: None, keyframes: Vec::new(), freeze_duration: None,
             smooth_slowmo: false, overlay_scale: None, overlay_x: None, overlay_y: None,
             text_y: None, blend_mode: None,
@@ -328,6 +332,20 @@ pub struct Project {
     /// frame — the vertical-video look). Default "black".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub canvas_fill: String,
+    /// Compound clip definitions (CapCut compound/nested projects):
+    /// a clip with `compound_id` set plays the referenced sub-project,
+    /// which export renders to a temp file first (recursively).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compounds: Vec<CompoundDef>,
+}
+
+/// A named nested project used by compound clips.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompoundDef {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    pub project: Box<Project>,
 }
 
 impl Default for Project {
@@ -343,6 +361,7 @@ impl Default for Project {
             ],
             markers: Vec::new(),
             canvas_fill: String::new(),
+            compounds: Vec::new(),
         }
     }
 }

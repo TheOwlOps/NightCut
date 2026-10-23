@@ -23,6 +23,11 @@ type DragMode =
 export default function Timeline() {
   const state = useEditor();
   const { project, zoom, playhead, selected } = state;
+  const selectedClip = selected
+    ? project.tracks.find((t) => t.id === selected.trackId)?.clips.find((c) => c.id === selected.clipId)
+    : undefined;
+  const inMulti = (trackId: string, clipId: string) =>
+    state.multiSel.some((x) => x.trackId === trackId && x.clipId === clipId);
   const drag = useRef<DragMode | null>(null);
   const tracksRef = useRef<HTMLDivElement>(null);
   const [snap, setSnap] = useState(true);
@@ -65,6 +70,10 @@ export default function Timeline() {
 
   const startClipDrag = (e: React.PointerEvent, trackId: string, clip: Clip, mode: DragMode["type"], edge?: "left" | "right") => {
     e.stopPropagation();
+    if ((e.ctrlKey || e.metaKey) && state.selected) {
+      state.toggleMultiSel({ trackId, clipId: clip.id });
+      return;
+    }
     state.select({ trackId, clipId: clip.id });
     if (project.tracks.find((t) => t.id === trackId)?.locked) return;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
@@ -97,6 +106,19 @@ export default function Timeline() {
         <button className="tool-btn" onClick={state.freezeAtPlayhead} title="Freeze the frame at the playhead for 2s (CapCut Freeze)">
           <IconFreeze size={18} />
         </button>
+        <button
+          className="tool-btn txt"
+          onClick={state.createCompound}
+          disabled={!selected}
+          title="Compound: group the selected clips (Ctrl+click to add more) into one nested clip"
+        >
+          🧩 Compound{state.multiSel.length > 0 ? ` (${state.multiSel.length + 1})` : ""}
+        </button>
+        {selectedClip?.compoundId && (
+          <button className="tool-btn txt" onClick={state.uncompoundSelected} title="Uncompound: restore the nested clips">
+            Ungroup
+          </button>
+        )}
         <button
           className={snap ? "tool-btn active" : "tool-btn"}
           onClick={() => setSnap(!snap)}
@@ -194,7 +216,7 @@ export default function Timeline() {
                   return (
                     <div
                       key={clip.id}
-                      className={`clip clip-${track.kind}${isSel ? " selected" : ""}${clip.freezeDuration !== undefined ? " frozen" : ""}`}
+                      className={`clip clip-${track.kind}${isSel ? " selected" : ""}${clip.freezeDuration !== undefined ? " frozen" : ""}${clip.compoundId ? " compound" : ""}${inMulti(track.id, clip.id) ? " in-multi" : ""}`}
                       style={{
                         left: clip.timelineStart * zoom,
                         width: Math.max(8, dur * zoom),
@@ -213,6 +235,7 @@ export default function Timeline() {
                           style={{ backgroundImage: `url(${item.thumb})` }}
                         />
                       )}
+                      {clip.compoundId && <span className="clip-badge">🧩</span>}
                       {clip.transitionIn && <span className="clip-badge">⇄</span>}
                       {clip.freezeDuration !== undefined && <span className="clip-badge">❄</span>}
                       <span className="clip-name">{clip.text ?? clip.source}</span>

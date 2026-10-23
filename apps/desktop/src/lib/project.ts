@@ -411,6 +411,8 @@ export interface Clip {
   textY?: number;
   /** Overlay blend mode ("screen", "multiply", ...); unset = normal. */
   blendMode?: string;
+  /** Compound clip: id of a Project.compounds definition this clip plays. */
+  compoundId?: string;
 }
 
 export interface Track {
@@ -432,6 +434,15 @@ export interface Project {
   markers?: number[];
   /** Canvas fill for clips not covering the frame: "black" | "blur". */
   canvasFill?: string;
+  /** Compound clip definitions (nested projects). */
+  compounds?: CompoundDef[];
+}
+
+/** A named nested project played by a compound clip. */
+export interface CompoundDef {
+  id: string;
+  name: string;
+  project: Project;
 }
 
 export const clipDuration = (c: Clip) => {
@@ -488,8 +499,11 @@ export function splitClip(p: Project, trackId: string, clipId: string, at: numbe
 
 /** Serialize to the exact JSON shape editor-core (Rust) reads/writes. */
 export function toRustJson(p: Project): string {
-  return JSON.stringify(
-    {
+  return JSON.stringify(projectToRustObj(p), null, 2);
+}
+
+export function projectToRustObj(p: Project): Record<string, unknown> {
+  return {
       version: p.version,
       ...(p.name ? { name: p.name } : {}),
       canvas: p.canvas,
@@ -531,14 +545,21 @@ export function toRustJson(p: Project): string {
           ...(c.overlayY !== undefined ? { overlayY: c.overlayY } : {}),
           ...(c.textY !== undefined ? { textY: c.textY } : {}),
           ...(c.blendMode ? { blendMode: c.blendMode } : {}),
+          ...(c.compoundId ? { compoundId: c.compoundId } : {}),
         })),
       })),
       ...((p.markers?.length ?? 0) > 0 ? { markers: p.markers } : {}),
       ...(p.canvasFill ? { canvas_fill: p.canvasFill } : {}),
-    },
-    null,
-    2,
-  );
+      ...((p.compounds?.length ?? 0) > 0
+        ? {
+            compounds: (p.compounds ?? []).map((d) => ({
+              id: d.id,
+              name: d.name,
+              project: projectToRustObj(d.project),
+            })),
+          }
+        : {}),
+  };
 }
 
 const round = (n: number) => Math.round(n * 1000) / 1000;

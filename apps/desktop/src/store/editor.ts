@@ -15,6 +15,7 @@ import {
   projectDuration,
   sourceAtPlayed,
   splitClip,
+  toRustJson,
 } from "../lib/project";
 
 export interface MediaItem {
@@ -52,6 +53,8 @@ interface EditorState {
   project: Project;
   media: MediaItem[];
   selected: Selection | null;
+  /** Extra clips in a Ctrl/Cmd+click multi-selection (besides `selected`). */
+  multiSel: Selection[];
   playhead: number; // seconds
   playing: boolean;
   zoom: number; // px per second
@@ -100,6 +103,15 @@ interface EditorState {
   freezeAtPlayhead: () => void;
   applyTemplate: (kind: "hook" | "intro" | "tutorial") => void;
   select: (sel: Selection | null) => void;
+  /** Toggle a clip in/out of the multi-selection (Ctrl/Cmd+click). */
+  toggleMultiSel: (sel: Selection) => void;
+  /** Group the selected clips into a compound (nested) clip. */
+  createCompound: () => void;
+  /** Restore a compound clip's inner clips onto the timeline. */
+  uncompoundSelected: () => void;
+  /** Desktop: render a compound to a cache file and register it as
+   * preview media so the compound plays in the preview. */
+  prerenderCompound: (compoundId: string) => Promise<void>;
   setPlayhead: (t: number) => void;
   setPlaying: (b: boolean) => void;
   setZoom: (z: number) => void;
@@ -127,6 +139,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   project: emptyProject(),
   media: [],
   selected: null,
+  multiSel: [],
   playhead: 0,
   playing: false,
   zoom: 48,
@@ -371,7 +384,145 @@ export const useEditor = create<EditorState>((set, get) => ({
     set(withHistory(s, next));
   },
 
-  select: (sel) => set({ selected: sel }),
+  select: (sel) => set({ selected: sel, multiSel: [] }),
+
+  toggleMultiSel: (sel) => {
+    const s = get();
+    const has = s.multiSel.some((x) => x.trackId === sel.trackId && x.clipId === sel.clipId);
+    set({
+      multiSel: has
+        ? s.multiSel.filter((x) => !(x.trackId === sel.trackId && x.clipId === sel.clipId))
+        : [...s.multiSel, sel],
+    });
+  },
+
+  createCompound: () => {
+    const s = get();
+    if (!s.selected) return;
+    const picks = [s.selected, ...s.multiSel];
+    const next = structuredClone(s.project);
+    const chosen: { trackId: string; clip: Clip }[] = [];
+    for (const pick of picks) {
+      const track = next.tracks.find((t) => t.id === pick.trackId);
+      const clip = track?.clips.find((c) => c.id === pick.clipId);
+      if (track && clip) chosen.push({ trackId: pick.trackId, clip });
+    }
+    if (chosen.length === 0) return;
+    const minStart = Math.min(...chosen.map((c) => c.clip.timelineStart));
+    const maxEnd = Math.max(...chosen.map((c) => clipEnd(c.clip)));
+    // Sub-project: same canvas + the tracks the clips came from, with
+    // clip starts shifted so the group begins at 0.
+    const trackIds = [...new Set(chosen.map((c) => c.trackId))];
+    const subTracks = trackIds.map((tid) => {
+      const src = next.tracks.find((t) => t.id === tid)!;
+      return {
+        ...src,
+        clips: chosen
+          .filter((c) => c.trackId === tid)
+          .map((c) => ({ ...structuredClone(c.clip), timelineStart: c.clip.timelineStart - minStart })),
+      };
+    });
+    const defId = `cmp_${Date.now().toString(36)}`;
+    const name = `Compound ${(next.compounds?.length ?? 0) + 1}`;
+    const def = {
+      id: defId,
+      name,
+      project: {
+        version: 1,
+        canvas: { ...next.canvas },
+        tracks: subTracks,
+        compounds: next.compounds ? structuredClone(next.compounds) : undefined,
+      } as Project,
+    };
+    // Remove the chosen clips from their tracks, then place one
+    // compound clip on the main video track at the group's start.
+    for (const tid of trackIds) {
+      const track = next.tracks.find((t) => t.id === tid)!;
+      track.clips = track.clips.filter((c) => !chosen.some((x) => x.clip.id === c.id));
+    }
+    const compoundClip: Clip = {
+      id: `clip_${Date.now().toString(36)}`,
+      source: name,
+      inSec: 0,
+      outSec: maxEnd - minStart,
+      timelineStart: minStart,
+      speed: 1,
+      volume: 1,
+      compoundId: defId,
+    };
+    const mainTrack = next.tracks.find((t) => t.id === "track-video") ?? next.tracks.find((t) => t.kind === "video");
+    if (!mainTrack) return;
+    mainTrack.clips.push(compoundClip);
+    mainTrack.clips.sort((a, b) => a.timelineStart - b.timelineStart);
+    next.compounds = [...(next.compounds ?? []), def];
+    set({
+      ...withHistory(s, next),
+      selected: { trackId: mainTrack.id, clipId: compoundClip.id },
+      multiSel: [],
+    });
+    void get().prerenderCompound(defId);
+  },
+
+  uncompoundSelected: () => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const track = next.tracks.find((t) => t.id === s.selected!.trackId);
+    const clip = track?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!track || !clip?.compoundId) return;
+    const def = (next.compounds ?? []).find((d) => d.id === clip.compoundId);
+    if (!def) return;
+    const offset = clip.timelineStart;
+    track.clips = track.clips.filter((c) => c.id !== clip.id);
+    for (const subTrack of def.project.tracks) {
+      let target = next.tracks.find((t) => t.id === subTrack.id);
+      if (!target) {
+        target = { id: subTrack.id, kind: subTrack.kind, clips: [] };
+        next.tracks.push(target);
+      }
+      for (const subClip of subTrack.clips) {
+        target.clips.push({ ...structuredClone(subClip), timelineStart: subClip.timelineStart + offset });
+      }
+      target.clips.sort((a, b) => a.timelineStart - b.timelineStart);
+    }
+    next.compounds = (next.compounds ?? []).filter((d) => d.id !== def.id);
+    set({ ...withHistory(s, next), selected: null, multiSel: [] });
+  },
+
+  prerenderCompound: async (compoundId) => {
+    const s = get();
+    const def = (s.project.compounds ?? []).find((d) => d.id === compoundId);
+    if (!def) return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const { convertFileSrc } = await import("@tauri-apps/api/core");
+      const dir = await invoke<string>("nightcut_cache_dir");
+      const out = `${dir}/compound-${compoundId}.mp4`;
+      const sources: Record<string, string> = {};
+      for (const t of def.project.tracks)
+        for (const c of t.clips) if (c.source && !c.compoundId) sources[c.id] = c.source;
+      await invoke("export_video", {
+        projectJson: toRustJson(def.project),
+        sources,
+        output: out,
+        maxHeight: null,
+        gif: false,
+        audioOnly: false,
+      });
+      const dur = projectDuration(def.project);
+      get().addMedia({
+        id: `compound-media-${compoundId}`,
+        name: def.name,
+        path: out,
+        url: convertFileSrc(out),
+        kind: "video",
+        duration: dur,
+      });
+    } catch {
+      // Browser build or render failure: the compound still exports;
+      // the preview shows its labeled placeholder.
+    }
+  },
   setPlayhead: (t) => set({ playhead: Math.max(0, t) }),
   setPlaying: (b) => set({ playing: b }),
   setZoom: (z) => set({ zoom: Math.min(240, Math.max(12, z)) }),

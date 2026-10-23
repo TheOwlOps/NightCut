@@ -282,6 +282,20 @@ input[type="color"] { cursor: pointer; }
   pointer-events: none; padding: 0 12px;
 }
 .preview-text { text-align: center; color: #fff; font-weight: 700; text-shadow: 0 2px 6px #000, 0 0 2px #000; }
+.clip.compound {
+  background: linear-gradient(135deg, #134e4a, #0f766e);
+  border-color: #2dd4bf;
+}
+.clip.in-multi {
+  outline: 2px solid #fbbf24;
+  outline-offset: -2px;
+}
+.tool-btn.txt {
+  width: auto;
+  padding: 0 8px;
+  font-size: 11px;
+  gap: 4px;
+}
 .scopes-row {
   display: flex;
   gap: 10px;

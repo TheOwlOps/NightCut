@@ -53,7 +53,11 @@ export default function ExportPanel({ open, onClose }: { open: boolean; onClose:
       // export-engine resolves and renders them with the FFmpeg sidecar.
       const sources: Record<string, string> = {};
       for (const t of project.tracks)
-        for (const c of t.clips) if (c.source) sources[c.id] = c.source;
+        for (const c of t.clips) if (c.source && !c.compoundId) sources[c.id] = c.source;
+      // Compound sub-projects resolve their clips from the same media.
+      for (const def of project.compounds ?? [])
+        for (const t of def.project.tracks)
+          for (const c of t.clips) if (c.source && !c.compoundId) sources[c.id] = c.source;
       const outName = gif
         ? output.replace(/\.mp4$/i, ".gif")
         : audioOnly
