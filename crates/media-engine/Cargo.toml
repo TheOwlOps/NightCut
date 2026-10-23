@@ -9,3 +9,7 @@ description = "NightCut media engine: ffprobe probing, proxy generation, thumbna
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# ONNX Runtime for local AI background removal (u2netp). Loaded
+# dynamically at runtime from the tools/onnx folder — the library is a
+# downloadable sidecar, never linked or bundled.
+ort = { version = "2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-20"] }

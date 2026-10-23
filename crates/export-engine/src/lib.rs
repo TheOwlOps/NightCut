@@ -64,11 +64,16 @@ pub struct ExportSettings {
     pub crf: u8,
     /// Optional drawtext font file; FFmpeg needs a real font path for text.
     pub font_file: Option<PathBuf>,
+    /// Output height cap (e.g. 720 for a 720p export); width scales to
+    /// keep the canvas aspect. None = canvas size.
+    pub max_height: Option<u32>,
+    /// Render an animated GIF instead of an MP4 (video only, 15 fps).
+    pub gif: bool,
 }
 
 impl Default for ExportSettings {
     fn default() -> Self {
-        Self { encoder: Encoder::Software, crf: 20, font_file: None }
+        Self { encoder: Encoder::Software, crf: 20, font_file: None, max_height: None, gif: false }
     }
 }
 
@@ -129,6 +134,8 @@ pub fn effect_video_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
         Effect::Denoise { .. } => Vec::new(), // audio-only effect
         Effect::Mask { .. } => Vec::new(),    // rendered via the alpha matte
         Effect::Stabilize { .. } => Vec::new(), // needs the detect-pass transforms (render())
+        Effect::PitchShift { .. } => Vec::new(), // audio-only effect
+        Effect::Lut { ref path } => vec![format!("lut3d=file='{}'", path.replace('\'', "\\'"))],
     }
 }
 
@@ -160,7 +167,11 @@ pub fn matte_value_expr(clip: &editor_core::Clip, w: u32, h: u32) -> Option<Stri
         let size = size.clamp(0.05, 1.0);
         let feather_px = (feather.clamp(0.0, 1.0) * (w.min(h) as f64) * 0.5).max(1.0);
         // Signed distance outside the shape (positive = outside).
-        let sd = if shape == "circle" {
+        // Linear mask: a gradient band sweeping along X; `size` places
+        // the band center, feather its width.
+        let sd = if shape == "linear" {
+            format!("X-{:.1}", (w as f64) * size)
+        } else if shape == "circle" {
             format!("hypot(X-W/2,H/2-Y)-{:.1}", (w.min(h) as f64) * size / 2.0)
         } else {
             format!(
@@ -270,6 +281,10 @@ pub fn effect_audio_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
         Effect::Reverse => vec!["areverse".to_string()],
         Effect::Denoise { strength } => {
             vec![format!("afftdn=nr={:.1}", 1.0 + strength.clamp(0.0, 1.0) * 40.0)]
+        }
+        Effect::PitchShift { semitones } => {
+            let ratio = 2f64.powf(semitones.clamp(-12.0, 12.0) / 12.0);
+            vec![format!("rubberband=pitch={ratio:.4}")]
         }
         _ => Vec::new(),
     }
@@ -423,10 +438,25 @@ pub fn build_ffmpeg_args_stabilized(
             filters.push(format!("[{i}:a]{}[ab{i}]", achain.join(",")));
         }
 
+        // Smooth slow motion: motion-interpolate the base stream when a
+        // constant-speed clip plays under 1x and asked for it.
+        if clip.smooth_slowmo && clip.speed < 1.0 && clip.speed_curve.is_none()
+            && clip.freeze_duration.is_none()
+        {
+            filters.push(format!("[vb{i}]minterpolate=fps={fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir[vmi{i}]"));
+        }
+        let base_label = if clip.smooth_slowmo && clip.speed < 1.0 && clip.speed_curve.is_none()
+            && clip.freeze_duration.is_none()
+        {
+            format!("vmi{i}")
+        } else {
+            format!("vb{i}")
+        };
+
         // ---- step 2: stabilization, keyframes, matte, video effects
         let matte = matte_value_expr(clip, w, h);
         let needs_alpha = has_chroma || matte.is_some();
-        let mut vlabel = format!("vb{i}");
+        let mut vlabel = base_label;
         // Stabilization first (it warps the raw frames; later transforms
         // then operate on stable footage, as in CapCut).
         if let (Some(smoothing), Some(trf)) = (
@@ -560,26 +590,51 @@ pub fn build_ffmpeg_args_stabilized(
         acat.as_str()
     };
 
+    // GIF has no audio track: terminate the audio chain in a sink so the
+    // filtergraph has no dangling outputs.
+    if settings.gif {
+        filters.push(format!("[{audio_label}]anullsink"));
+    }
+
+    // Optional output transform: GIF (15fps) and/or a height cap.
+    let mut video_out = current.clone();
+    if settings.gif || settings.max_height.is_some() {
+        let mut tail: Vec<String> = Vec::new();
+        if settings.gif { tail.push("fps=15".to_string()); }
+        if let Some(mh) = settings.max_height {
+            if mh < h { tail.push(format!("scale=-2:{mh}")); }
+        }
+        if !tail.is_empty() {
+            filters.push(format!("[{current}]{}[vfinal]", tail.join(",")));
+            video_out = "vfinal".to_string();
+        }
+    }
+
     args.push("-filter_complex".into());
     args.push(filters.join(";"));
     args.push("-map".into());
-    args.push(format!("[{current}]"));
-    args.push("-map".into());
-    args.push(format!("[{audio_label}]"));
-    args.push("-c:v".into());
-    args.push(settings.encoder.ffmpeg_codec().into());
-    if settings.encoder == Encoder::Software {
-        args.push("-crf".into());
-        args.push(settings.crf.to_string());
-        args.push("-preset".into());
-        args.push("medium".into());
+    args.push(format!("[{video_out}]"));
+    if settings.gif {
+        args.push("-loop".into());
+        args.push("0".into());
+    } else {
+        args.push("-map".into());
+        args.push(format!("[{audio_label}]"));
+        args.push("-c:v".into());
+        args.push(settings.encoder.ffmpeg_codec().into());
+        if settings.encoder == Encoder::Software {
+            args.push("-crf".into());
+            args.push(settings.crf.to_string());
+            args.push("-preset".into());
+            args.push("medium".into());
+        }
+        args.push("-c:a".into());
+        args.push("aac".into());
+        args.push("-b:a".into());
+        args.push("160k".into());
+        args.push("-movflags".into());
+        args.push("+faststart".into());
     }
-    args.push("-c:a".into());
-    args.push("aac".into());
-    args.push("-b:a".into());
-    args.push("160k".into());
-    args.push("-movflags".into());
-    args.push("+faststart".into());
     args.push(output.display().to_string());
     Ok(args)
 }
@@ -853,6 +908,63 @@ mod tests {
         assert!(full[0].contains("colorchannelmixer=0.393:0.769:0.189:0"), "{}", full[0]);
         let none = effect_video_filters(&editor_core::Effect::Sepia { intensity: 0.0 }, 4.0);
         assert!(none[0].contains("colorchannelmixer=1.000:0.000:0.000:0"), "{}", none[0]);
+    }
+
+    /// Live render of Wave 6 export features: LUT, linear mask, pitch
+    /// shift, smooth slow-mo (minterpolate) and GIF output.
+    #[test]
+    #[ignore]
+    fn renders_wave6_features() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.mp4");
+        if !src.exists() {
+            let status = Command::new("ffmpeg")
+                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=30",
+                       "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                       "-c:v", "libx264", "-c:a", "aac", "-shortest"])
+                .arg(&src).status().unwrap();
+            assert!(status.success());
+        }
+        let lut = dir.join("identity.cube");
+        std::fs::write(&lut, "TITLE \"id\"\nLUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n").unwrap();
+        let sources: BTreeMap<String, PathBuf> =
+            [("c1".to_string(), src.clone()), ("m1".to_string(), src.clone())].into_iter().collect();
+        let make = |fx: Vec<Effect>, slowmo: bool| {
+            let mut p = Project::default();
+            p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+            let mut clip = Clip::new("c1", "src.mp4", 0.0, 1.0, 0.0);
+            clip.effects = fx;
+            clip.smooth_slowmo = slowmo;
+            if slowmo { clip.speed = 0.5; }
+            p.tracks[0].clips = vec![clip];
+            let mut music = Clip::new("m1", "src.mp4", 0.0, 1.0, 0.0);
+            music.effects = vec![Effect::PitchShift { semitones: 7.0 }];
+            p.tracks[1].clips = vec![music];
+            p
+        };
+        let p = make(vec![
+            Effect::Lut { path: lut.to_string_lossy().to_string() },
+            Effect::Mask { shape: "linear".into(), size: 0.5, feather: 0.3, invert: false },
+        ], false);
+        render(&p, &sources, &dir.join("wave6-lut.mp4"), &ExportSettings::default())
+            .expect("lut+linear mask render");
+
+        let p = make(vec![], true);
+        let slow = dir.join("wave6-slowmo.mp4");
+        render(&p, &sources, &slow, &ExportSettings::default()).expect("slowmo render");
+        let out = Command::new("ffprobe")
+            .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"])
+            .arg(&slow).output().unwrap();
+        let dur: f64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0.0);
+        assert!(dur > 1.7, "0.5x of 1s should be ~2s, got {dur}");
+
+        let p = make(vec![], false);
+        let gif_path = dir.join("wave6.gif");
+        render(&p, &sources, &gif_path, &ExportSettings { gif: true, ..Default::default() })
+            .expect("gif render");
+        let head = std::fs::read(&gif_path).unwrap();
+        assert_eq!(&head[0..3], b"GIF", "output should be a real GIF");
     }
 
     #[test]

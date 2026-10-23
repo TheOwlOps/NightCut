@@ -26,7 +26,7 @@ export default function Timeline() {
    * nearest clip edge or the playhead when within 0.3s. */
   const snapTime = (t: number) => {
     if (!snap) return t;
-    const points = [playhead];
+    const points = [playhead, ...(project.markers ?? [])];
     for (const track of project.tracks)
       for (const c of track.clips) points.push(c.timelineStart, c.timelineStart + (c.outSec - c.inSec) / c.speed);
     let best = t;
@@ -159,6 +159,9 @@ export default function Timeline() {
                 <span key={s} className="tick" style={{ left: s * zoom }}>
                   {s % 5 === 0 ? `${s}s` : ""}
                 </span>
+              ))}
+              {(project.markers ?? []).map((m, i) => (
+                <span key={`mk${i}`} className="beat-marker" style={{ left: m * zoom }} title={`Beat ${m.toFixed(2)}s`} />
               ))}
             </div>
 

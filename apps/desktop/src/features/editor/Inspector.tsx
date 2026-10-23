@@ -5,11 +5,123 @@ import { EFFECT_LABELS, Effect, SPEED_CURVE_PRESETS, clipDuration } from "../../
 const EFFECT_TYPES = Object.keys(EFFECT_LABELS) as Effect["type"][];
 
 /** Right panel: properties of the selected clip + canvas presets. */
+/** Motion tracking (desktop): follow the clip's most salient patch with
+ * template matching and turn the result into follow-cam keyframes. */
+function MotionTrackButton() {
+  const { project, selected, media, setSelectedKeyframes } = useEditor();
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const clip = selected
+    ? project.tracks.find((t) => t.id === selected.trackId)?.clips.find((c) => c.id === selected.clipId)
+    : undefined;
+  if (!("__TAURI_INTERNALS__" in window) || !clip || clip.text !== undefined) return null;
+  const run = async () => {
+    const item = media.find((m) => m.path === clip.source || m.name === clip.source);
+    const path = item?.path ?? (clip.source.includes("/") ? clip.source : undefined);
+    if (!path) {
+      setNote("Needs a desktop-imported clip (real file path).");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const raw = await invoke<string>("track_motion", {
+        path,
+        start: clip.inSec,
+        duration: Math.max(0.5, clip.outSec - clip.inSec),
+      });
+      const points = JSON.parse(raw) as { t: number; nx: number; ny: number }[];
+      if (points.length < 2) {
+        setNote("Not enough frames to track.");
+        return;
+      }
+      const { nx: nx0, ny: ny0 } = points[0];
+      // Follow-cam: the crop window moves WITH the subject (posX/posY
+      // shift the window in the export's zoompan), zoomed to 1.6x.
+      const kfs = points.filter((_, i) => i % 2 === 0 || i === points.length - 1).map((p) => ({
+        at: Math.round((p.t / Math.max(0.05, clip.speed)) * 100) / 100,
+        scale: 1.6,
+        posX: Math.round((p.nx - nx0) * 100) / 100,
+        posY: Math.round((p.ny - ny0) * 100) / 100,
+        rotation: 0,
+        opacity: 1,
+      }));
+      setSelectedKeyframes(kfs);
+      setNote(`Tracked ${points.length} samples → ${kfs.length} follow keyframes (zoom 1.6×).`);
+    } catch (e) {
+      setNote(`Tracking failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="row" style={{ marginTop: 6 }}>
+      <button onClick={() => void run()} disabled={busy}>
+        {busy ? "Tracking…" : "🎯 Motion tracking → follow keyframes"}
+      </button>
+      {note && <span className="hint">{note}</span>}
+    </div>
+  );
+}
+
+/** AI background removal (desktop, ONNX sidecar): produces a .nobg.mp4
+ * media item with the subject over black. */
+function RemoveBgButton() {
+  const { project, selected, media, addMedia } = useEditor();
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const clip = selected
+    ? project.tracks.find((t) => t.id === selected.trackId)?.clips.find((c) => c.id === selected.clipId)
+    : undefined;
+  if (!("__TAURI_INTERNALS__" in window) || !clip || clip.text !== undefined) return null;
+  const run = async () => {
+    const item = media.find((m) => m.path === clip.source || m.name === clip.source);
+    const path = item?.path ?? (clip.source.includes("/") ? clip.source : undefined);
+    if (!path) {
+      setNote("Needs a desktop-imported clip (real file path).");
+      return;
+    }
+    setBusy(true);
+    setNote("Segmenting frames locally (u2netp)…");
+    try {
+      const { invoke, convertFileSrc } = await import("@tauri-apps/api/core");
+      const out = await invoke<string>("remove_background", { path });
+      const probe = document.createElement("video");
+      probe.preload = "metadata";
+      probe.onloadedmetadata = () => {
+        addMedia({
+          id: `media-${Date.now()}`,
+          name: out.split("/").pop() ?? "nobg.mp4",
+          url: convertFileSrc(out),
+          path: out,
+          duration: probe.duration || item?.duration || 0,
+          kind: "video",
+        });
+        setNote("Background removed — the .nobg clip was added to the timeline.");
+      };
+      probe.src = convertFileSrc(out);
+    } catch (e) {
+      setNote(`Remove BG failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="row" style={{ marginTop: 6 }}>
+      <button onClick={() => void run()} disabled={busy}>
+        {busy ? "Removing BG…" : "🪄 Remove background (AI, local)"}
+      </button>
+      {note && <span className="hint">{note}</span>}
+    </div>
+  );
+}
+
 export default function Inspector() {
   const {
     project, selected, updateSelectedText, setCanvas, addEffect, removeEffect, updateEffect,
     setSelectedSpeed, setSelectedVolume, setSelectedTransitionDuration, removeSelectedTransition,
     setSelectedTextStyle, setSpeedCurve, addKeyframeAtPlayhead, updateKeyframe, removeKeyframe,
+    applyAnimationPreset, setSelectedSmoothSlowmo,
   } = useEditor();
   const [newFx, setNewFx] = useState<Effect["type"]>("adjust");
   const clip = selected
@@ -108,6 +220,24 @@ export default function Inspector() {
                 <span>Audio</span>
                 <Slider label="Volume" value={clip.volume} min={0} max={2} step={0.05}
                   onChange={setSelectedVolume} />
+              </div>
+              <div className="field">
+                <span>Animation</span>
+                <div className="row">
+                  {["Zoom in", "Zoom out", "Fade in", "Slide in", "Spin in", "Pulse"].map((n) => (
+                    <button key={n} className="chip" onClick={() => applyAnimationPreset(n)}>{n}</button>
+                  ))}
+                </div>
+                <label className="row" style={{ gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    checked={clip.smoothSlowmo ?? false}
+                    onChange={(e) => setSelectedSmoothSlowmo(e.target.checked)}
+                  />
+                  <span className="hint">Smooth slow-mo (optical flow under 1×)</span>
+                </label>
+                <MotionTrackButton />
+                <RemoveBgButton />
               </div>
               <div className="field">
                 <span>Keyframes ◆</span>
@@ -298,6 +428,7 @@ function EffectControls({ effect, onChange }: { effect: Effect; onChange: (e: Ef
           <div className="row">
             <button className="chip" onClick={() => onChange({ ...effect, shape: "circle" })}>● Circle</button>
             <button className="chip" onClick={() => onChange({ ...effect, shape: "rect" })}>■ Rect</button>
+            <button className="chip" onClick={() => onChange({ ...effect, shape: "linear" })}>🌗 Linear</button>
             <button className="chip" onClick={() => onChange({ ...effect, invert: !effect.invert })}>
               {effect.invert ? "Inverted" : "Normal"}
             </button>
@@ -315,6 +446,31 @@ function EffectControls({ effect, onChange }: { effect: Effect; onChange: (e: Ef
           <Slider label="Smoothing" value={effect.smoothing} min={0} max={30} step={1}
             onChange={(v) => onChange({ ...effect, smoothing: Math.round(v) })} />
           <p className="hint">Two-pass vidstab at export (desktop). Applies to constant-speed clips.</p>
+        </>
+      );
+    case "pitch_shift":
+      return (
+        <>
+          <Slider label="Semitones" value={effect.semitones} min={-12} max={12} step={1}
+            onChange={(v) => onChange({ ...effect, semitones: Math.round(v) })} />
+          <div className="row">
+            <button className="chip" onClick={() => onChange({ ...effect, semitones: 7 })}>🧒 Chipmunk</button>
+            <button className="chip" onClick={() => onChange({ ...effect, semitones: -6 })}>🧔 Deep</button>
+            <button className="chip" onClick={() => onChange({ ...effect, semitones: 0 })}>Normal</button>
+          </div>
+          <p className="hint">Voice pitch at export (rubberband), duration preserved.</p>
+        </>
+      );
+    case "lut":
+      return (
+        <>
+          <input
+            className="caption-input"
+            placeholder="Path to a .cube LUT file"
+            value={effect.path}
+            onChange={(e) => onChange({ ...effect, path: e.target.value })}
+          />
+          <p className="hint">Applied with lut3d at export on the desktop build.</p>
         </>
       );
     default:

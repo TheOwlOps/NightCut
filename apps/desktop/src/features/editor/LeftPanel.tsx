@@ -18,7 +18,27 @@ const EFFECT_ICONS: Partial<Record<Effect["type"], string>> = {
   denoise: "🔇", mask: "🎭", stabilize: "🎯",
 };
 
-type Tab = "media" | "text" | "effects" | "filters" | "transitions" | "audio" | "captions" | "templates";
+const STICKERS = ["🔥", "❤️", "😂", "🎉", "⭐", "👍", "💯", "🚀", "🎬", "🎵", "⚡", "🌙", "✅", "❌", "➡️", "💥"];
+
+function StickersPanel() {
+  const { addTextClip } = useEditor();
+  return (
+    <div className="dock-panel">
+      <div className="panel-title">Stickers</div>
+      <p className="hint">Stickers ride the text track (huge emoji glyphs) — they preview and export like text.</p>
+      <div className="lib-grid">
+        {STICKERS.map((s) => (
+          <button key={s} className="lib-card" onClick={() => addTextClip(s, { fontSize: 160, color: "#ffffff" })}>
+            <span className="lib-tile" style={{ background: "#17171c", fontSize: 30 }}>{s}</span>
+            <span className="lib-name">Sticker</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+type Tab = "media" | "text" | "effects" | "filters" | "transitions" | "audio" | "captions" | "templates" | "stickers";
 
 const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "media", icon: "🎞", label: "Media" },
@@ -29,6 +49,7 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "audio", icon: "🎵", label: "Audio" },
   { id: "captions", icon: "CC", label: "Captions" },
   { id: "templates", icon: "▦", label: "Templates" },
+  { id: "stickers", icon: "🌟", label: "Stickers" },
 ];
 
 /**
@@ -60,6 +81,7 @@ export default function LeftPanel() {
         {tab === "audio" && <AudioPanel />}
         {tab === "captions" && <CaptionsPanel />}
         {tab === "templates" && <TemplatesPanel />}
+        {tab === "stickers" && <StickersPanel />}
       </div>
     </div>
   );
@@ -243,6 +265,95 @@ function VoiceoverRecorder() {
   );
 }
 
+/** Text-to-speech (desktop): local flite voices -> wav on the audio track. */
+function TextToSpeech() {
+  const { addMedia } = useEditor();
+  const [text, setText] = useState("Hello from NightCut");
+  const [voice, setVoice] = useState("slt");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  if (!isTauri()) return null;
+  const run = async () => {
+    setBusy(true);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const { convertFileSrc } = await import("@tauri-apps/api/core");
+      const path = await invoke<string>("text_to_speech", { text, voice });
+      const probe = document.createElement("audio");
+      probe.preload = "metadata";
+      probe.onloadedmetadata = () => {
+        addMedia({
+          id: newId("media"),
+          name: path.split("/").pop() ?? "tts.wav",
+          url: convertFileSrc(path),
+          path,
+          duration: probe.duration || 1,
+          kind: "audio",
+        });
+        setNote("Added to the audio track.");
+      };
+      probe.src = convertFileSrc(path);
+    } catch (e) {
+      setNote(`TTS failed: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="field">
+      <span>Text to speech (local)</span>
+      <textarea
+        className="caption-input"
+        rows={2}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+      <div className="row">
+        <select value={voice} onChange={(e) => setVoice(e.target.value)}>
+          {["slt", "kal", "awb", "rms"].map((v) => (
+            <option key={v} value={v}>{v}</option>
+          ))}
+        </select>
+        <button onClick={() => void run()} disabled={busy || !text.trim()}>
+          {busy ? "…" : "🔊 Generate"}
+        </button>
+      </div>
+      {note && <p className="hint">{note}</p>}
+    </div>
+  );
+}
+
+/** Beat detection (desktop): onsets of the first music clip become
+ * timeline markers; snapping can target them. */
+function BeatDetect() {
+  const { media, setMarkers } = useEditor();
+  const [note, setNote] = useState("");
+  if (!isTauri()) return null;
+  const run = async () => {
+    const music = media.find((m) => m.kind === "audio" && m.path);
+    if (!music?.path) {
+      setNote("Import an audio file with a real path first (desktop import).");
+      return;
+    }
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const raw = await invoke<string>("detect_beats", { path: music.path });
+      const parsed = JSON.parse(raw) as { beats: number[]; bpm: number };
+      setMarkers(parsed.beats);
+      setNote(`${parsed.beats.length} beats · ≈${Math.round(parsed.bpm)} BPM — markers are on the ruler.`);
+    } catch (e) {
+      setNote(`Beat detection failed: ${String(e)}`);
+    }
+  };
+  return (
+    <div className="field">
+      <span>Beat sync</span>
+      <button onClick={() => void run()}>🥁 Detect beats → markers</button>
+      {note && <p className="hint">{note}</p>}
+    </div>
+  );
+}
+
 function AudioPanel() {
   const { media, addMedia, addToTimeline } = useEditor();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -266,6 +377,8 @@ function AudioPanel() {
         + Import music / audio
       </button>
       <VoiceoverRecorder />
+      <TextToSpeech />
+      <BeatDetect />
       <input ref={fileRef} type="file" accept="audio/*" multiple hidden onChange={(e) => importAudio(e.target.files)} />
       <div className="media-list">
         {audio.length === 0 && <p className="hint">Imported audio lands on the audio track. Select it there to set volume and fades.</p>}

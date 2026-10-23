@@ -28,6 +28,9 @@ export interface MediaItem {
   path?: string;
   /** Captured poster frame (data URL) shown on timeline clips. */
   thumb?: string;
+  /** Low-res proxy file (desktop): path + preview URL for smooth scrubbing. */
+  proxyPath?: string;
+  proxyUrl?: string;
 }
 
 interface Selection {
@@ -51,6 +54,7 @@ interface EditorState {
   addCaptionCues: (cues: { start: number; end: number; text: string }[], offset: number) => number;
   addAudioAtPlayhead: (mediaId: string) => void;
   setMediaThumb: (mediaId: string, thumb: string) => void;
+  setMediaProxy: (mediaId: string, proxyPath: string, proxyUrl: string) => void;
   toggleTrack: (trackId: string, flag: "muted" | "hidden" | "locked") => void;
   applyFilterPreset: (effects: Effect[]) => void;
   applyTransition: (kind: string) => void;
@@ -61,6 +65,13 @@ interface EditorState {
   setSelectedTextStyle: (patch: { fontSize?: number; textColor?: string }) => void;
   setSpeedCurve: (points: SpeedPoint[] | null) => void;
   addKeyframeAtPlayhead: () => void;
+  /** Set beat markers (seconds) — view/edit state, no history entry. */
+  setMarkers: (markers: number[]) => void;
+  /** Apply a named animation preset (keyframes) to the selected clip. */
+  applyAnimationPreset: (name: string) => void;
+  setSelectedSmoothSlowmo: (on: boolean) => void;
+  /** Replace the selected clip's keyframes wholesale (motion tracking). */
+  setSelectedKeyframes: (kfs: import("../lib/project").Keyframe[]) => void;
   updateKeyframe: (index: number, patch: Partial<Keyframe>) => void;
   removeKeyframe: (index: number) => void;
   freezeAtPlayhead: () => void;
@@ -228,6 +239,10 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   setMediaThumb: (mediaId, thumb) => {
     set({ media: get().media.map((m) => (m.id === mediaId ? { ...m, thumb } : m)) });
+  },
+
+  setMediaProxy: (mediaId, proxyPath, proxyUrl) => {
+    set({ media: get().media.map((m) => (m.id === mediaId ? { ...m, proxyPath, proxyUrl } : m)) });
   },
 
   applyFilterPreset: (effects) => {
@@ -454,6 +469,78 @@ export const useEditor = create<EditorState>((set, get) => ({
       ?.clips.find((c) => c.id === s.selected!.clipId);
     if (!clip?.keyframes) return;
     clip.keyframes = clip.keyframes.filter((_, i) => i !== index);
+    set(withHistory(s, next));
+  },
+
+  setMarkers: (markers) => set({ project: { ...get().project, markers } }),
+
+  setSelectedKeyframes: (kfs) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip) return;
+    clip.keyframes = [...kfs].sort((a, b) => a.at - b.at);
+    set(withHistory(s, next));
+  },
+
+  setSelectedSmoothSlowmo: (on) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip) return;
+    clip.smoothSlowmo = on;
+    set(withHistory(s, next));
+  },
+
+  applyAnimationPreset: (name) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip || clip.text !== undefined) return;
+    const dur = Math.max(0.2, (clip.outSec - clip.inSec) / Math.max(0.05, clip.speed));
+    const base = { scale: 1, posX: 0, posY: 0, rotation: 0, opacity: 1 };
+    const mid = Math.min(0.6, dur / 2);
+    const presets: Record<string, Keyframe[]> = {
+      "Zoom in": [
+        { ...base, at: 0 },
+        { ...base, at: dur, scale: 1.35 },
+      ],
+      "Zoom out": [
+        { ...base, at: 0, scale: 1.35 },
+        { ...base, at: dur },
+      ],
+      "Fade in": [
+        { ...base, at: 0, opacity: 0 },
+        { ...base, at: mid, opacity: 1 },
+      ],
+      "Slide in": [
+        { ...base, at: 0, posX: -0.6, opacity: 0 },
+        { ...base, at: mid, opacity: 1 },
+      ],
+      "Spin in": [
+        { ...base, at: 0, rotation: -30, scale: 0.6, opacity: 0 },
+        { ...base, at: mid, opacity: 1 },
+      ],
+      "Pulse": [
+        { ...base, at: 0 },
+        { ...base, at: dur * 0.25, scale: 1.12 },
+        { ...base, at: dur * 0.5 },
+        { ...base, at: dur * 0.75, scale: 1.12 },
+        { ...base, at: dur },
+      ],
+    };
+    const kfs = presets[name];
+    if (!kfs) return;
+    clip.keyframes = kfs;
     set(withHistory(s, next));
   },
 

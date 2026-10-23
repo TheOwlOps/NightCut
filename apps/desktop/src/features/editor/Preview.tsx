@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useEditor } from "../../store/editor";
 import {
   clipEnd, cssFilterFor, fadeOpacity, interpKeyframes, playedAtSource, projectDuration,
@@ -12,6 +12,7 @@ import {
  */
 export default function Preview() {
   const { project, media, playhead, playing, setPlayhead, setPlaying, setCanvas } = useEditor();
+  const [proxyMode, setProxyMode] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const videoTrack = project.tracks.find((t) => t.kind === "video");
@@ -57,7 +58,7 @@ export default function Preview() {
         {activeMedia ? (
           <video
             ref={videoRef}
-            src={activeMedia.url}
+            src={proxyMode && activeMedia.proxyUrl ? activeMedia.proxyUrl : activeMedia.url}
             className="preview-video"
             style={
               active
@@ -133,6 +134,13 @@ export default function Preview() {
             </button>
           ))}
         </div>
+        <button
+          className={proxyMode ? "chip active" : "chip"}
+          title="Proxy mode: preview from the low-res proxy for smooth scrubbing (export always uses the original)"
+          onClick={() => setProxyMode(!proxyMode)}
+        >
+          Proxy
+        </button>
         <button
           className="play-btn"
           title="Fullscreen preview"

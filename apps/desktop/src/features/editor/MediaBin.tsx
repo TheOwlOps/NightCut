@@ -86,6 +86,14 @@ export default function MediaBin() {
       const url = convertFileSrc(path);
       addMedia({ id, name, url, duration, kind, path });
       if (kind === "video") {
+        // Generate a low-res proxy in the background for smooth scrubbing
+        // (CapCut's proxy mode); preview can toggle to it.
+        const proxyOut = `${path.replace(/(\.[^.]+)?$/, ".proxy.mp4")}`;
+        void tauriInvoke<string>("make_proxy", { input: path, output: proxyOut })
+          .then((out) => useEditor.getState().setMediaProxy(id, out, convertFileSrc(out)))
+          .catch(() => { /* proxy is an optimization, never a blocker */ });
+      }
+      if (kind === "video") {
         const probe = document.createElement("video");
         probe.preload = "auto";
         probe.muted = true;

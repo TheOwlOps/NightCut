@@ -20,7 +20,9 @@ export type Effect =
   | { type: "chroma_key"; color: string; similarity: number; blend: number }
   | { type: "denoise"; strength: number }
   | { type: "mask"; shape: string; size: number; feather: number; invert: boolean }
-  | { type: "stabilize"; smoothing: number };
+  | { type: "stabilize"; smoothing: number }
+  | { type: "pitch_shift"; semitones: number }
+  | { type: "lut"; path: string };
 
 export const EFFECT_LABELS: Record<Effect["type"], string> = {
   adjust: "Brightness / Contrast",
@@ -39,6 +41,8 @@ export const EFFECT_LABELS: Record<Effect["type"], string> = {
   denoise: "Noise reduction (audio)",
   mask: "Mask (shape)",
   stabilize: "Stabilize",
+  pitch_shift: "Pitch shift",
+  lut: "LUT (.cube)",
 };
 
 export interface SpeedPoint {
@@ -219,6 +223,8 @@ export function defaultEffect(type: Effect["type"]): Effect {
     case "denoise": return { type, strength: 0.5 };
     case "mask": return { type, shape: "circle", size: 0.7, feather: 0.2, invert: false };
     case "stabilize": return { type, smoothing: 10 };
+    case "pitch_shift": return { type, semitones: 4 };
+    case "lut": return { type, path: "" };
     default: return { type } as Effect;
   }
 }
@@ -306,6 +312,10 @@ export function effectFfmpegFilters(fx: Effect, clipDur: number): { video: strin
       // No direct filter: mask renders via the matte, stabilize via the
       // two-pass vidstab flow (see buildFfmpegCommand / export-engine).
       return { video: [], audio: [] };
+    case "pitch_shift":
+      return { video: [], audio: [`rubberband=pitch=${Math.pow(2, Math.min(12, Math.max(-12, fx.semitones)) / 12).toFixed(4)}`] };
+    case "lut":
+      return { video: [`lut3d=file='${fx.path.replace(/'/g, "\\'")}'`], audio: [] };
   }
 }
 
@@ -326,6 +336,8 @@ export interface Clip {
   speedCurve?: SpeedPoint[];
   keyframes?: Keyframe[];
   freezeDuration?: number;
+  /** Smooth slow motion (motion interpolation under 1x). */
+  smoothSlowmo?: boolean;
 }
 
 export interface Track {
@@ -341,6 +353,8 @@ export interface Project {
   version: number;
   canvas: { width: number; height: number; fps: number };
   tracks: Track[];
+  /** Timeline markers (seconds) — beat detection results. */
+  markers?: number[];
 }
 
 export const clipDuration = (c: Clip) => {
@@ -362,6 +376,7 @@ export function emptyProject(): Project {
       { id: "track-audio", kind: "audio", clips: [] },
       { id: "track-text", kind: "text", clips: [] },
     ],
+    markers: [],
   };
 }
 
@@ -421,8 +436,10 @@ export function toRustJson(p: Project): string {
           ...(c.speedCurve ? { speedCurve: c.speedCurve } : {}),
           ...(c.keyframes && c.keyframes.length > 0 ? { keyframes: c.keyframes } : {}),
           ...(c.freezeDuration !== undefined ? { freezeDuration: c.freezeDuration } : {}),
+          ...(c.smoothSlowmo ? { smoothSlowmo: true } : {}),
         })),
       })),
+      ...((p.markers?.length ?? 0) > 0 ? { markers: p.markers } : {}),
     },
     null,
     2,

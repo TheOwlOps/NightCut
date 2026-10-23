@@ -85,6 +85,11 @@ pub enum Effect {
     /// vidstabdetect for the clip and the graph applies vidstabtransform
     /// with `smoothing` frames. Skipped for speed-curve/freeze clips.
     Stabilize { smoothing: u32 },
+    /// Voice pitch shift (CapCut voice effects), semitones -12..12,
+    /// duration preserved (rubberband).
+    PitchShift { semitones: f64 },
+    /// Apply a .cube LUT file (CapCut LUT filters), by path.
+    Lut { path: String },
 }
 
 /// One point of a speed curve (CapCut "Curve" speed). `at` is a fraction
@@ -170,6 +175,10 @@ pub struct Clip {
     /// seconds (the clip's played duration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freeze_duration: Option<f64>,
+    /// Smooth slow motion: motion-interpolate (minterpolate) when the
+    /// clip plays slower than 1x (CapCut "smooth slow-mo").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub smooth_slowmo: bool,
 }
 
 fn default_speed() -> f64 { 1.0 }
@@ -183,6 +192,7 @@ impl Clip {
             speed: 1.0, volume: 1.0, text: None, font_size: None,
             effects: Vec::new(), transition_in: None, text_color: None,
             speed_curve: None, keyframes: Vec::new(), freeze_duration: None,
+            smooth_slowmo: false,
         }
     }
     pub fn text_clip(id: impl Into<String>, text: impl Into<String>, timeline_start: f64, duration: f64) -> Self {
@@ -254,6 +264,10 @@ pub struct Project {
     pub canvas: Canvas,
     #[serde(default)]
     pub tracks: Vec<Track>,
+    /// Timeline markers in seconds (beat detection, user markers — CapCut
+    /// "Markers"). Snapping can target them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<f64>,
 }
 
 impl Default for Project {
@@ -266,6 +280,7 @@ impl Default for Project {
                 Track::new("track-audio", TrackKind::Audio),
                 Track::new("track-text", TrackKind::Text),
             ],
+            markers: Vec::new(),
         }
     }
 }

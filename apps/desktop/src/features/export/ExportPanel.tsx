@@ -12,6 +12,8 @@ const isTauri = () => "__TAURI_INTERNALS__" in window;
 export default function ExportPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const project = useEditor((s) => s.project);
   const [output, setOutput] = useState("nightcut-export.mp4");
+  const [maxHeight, setMaxHeight] = useState<number>(0); // 0 = original
+  const [gif, setGif] = useState(false);
   const [status, setStatus] = useState<string>("");
   const command = useMemo(() => buildFfmpegCommand(project, output), [project, output]);
 
@@ -38,7 +40,9 @@ export default function ExportPanel({ open, onClose }: { open: boolean; onClose:
       await invoke("export_video", {
         projectJson: toRustJson(project),
         sources,
-        output,
+        output: gif ? output.replace(/\.mp4$/i, ".gif") : output,
+        maxHeight: maxHeight > 0 ? maxHeight : null,
+        gif,
       });
       setStatus(`Done: ${output}`);
     } catch (err) {
@@ -54,6 +58,24 @@ export default function ExportPanel({ open, onClose }: { open: boolean; onClose:
           <span>Output file</span>
           <input value={output} onChange={(e) => setOutput(e.target.value)} />
         </label>
+        <div className="row">
+          <label className="field" style={{ flex: 1 }}>
+            <span>Resolution</span>
+            <select value={maxHeight} onChange={(e) => setMaxHeight(Number(e.target.value))}>
+              <option value={0}>Original</option>
+              <option value={1080}>1080p</option>
+              <option value={720}>720p</option>
+              <option value={480}>480p</option>
+            </select>
+          </label>
+          <label className="field" style={{ flex: 1 }}>
+            <span>Format</span>
+            <select value={gif ? "gif" : "mp4"} onChange={(e) => setGif(e.target.value === "gif")}>
+              <option value="mp4">MP4 (video + audio)</option>
+              <option value="gif">GIF (15 fps, silent)</option>
+            </select>
+          </label>
+        </div>
         <label className="field">
           <span>FFmpeg command (generated from this timeline)</span>
           <textarea readOnly rows={5} value={command} />

@@ -24,6 +24,8 @@ pub enum MediaError {
     FfmpegFailed(std::process::ExitStatus),
     #[error("could not parse JSON output: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("onnx background removal failed: {0}")]
+    Ort(String),
 }
 
 pub type Result<T> = std::result::Result<T, MediaError>;
@@ -210,6 +212,340 @@ pub fn whisper_captions(whisper_bin: &Path, model: &Path, wav: &Path) -> Result<
     parse_whisper_json(&json)
 }
 
+/// Local text-to-speech via FFmpeg's flite (libflite) source — the local
+/// substitute for CapCut's cloud TTS voices. Returns the WAV path.
+pub fn synthesize_speech(text: &str, voice: &str, out_wav: &Path) -> Result<PathBuf> {
+    // flite's text quoting: single quotes inside the filter arg are the
+    // risk; strip them rather than fight FFmpeg escaping rules.
+    let safe: String = text.chars().filter(|c| *c != '\'' && *c != '\\').collect();
+    let source = format!("flite=text='{safe}':voice={voice}");
+    let status = Command::new("ffmpeg")
+        .args(["-y", "-v", "error", "-f", "lavfi", "-i", &source])
+        .arg(out_wav)
+        .status()?;
+    if !status.success() { return Err(MediaError::FfmpegFailed(status)); }
+    Ok(out_wav.to_path_buf())
+}
+
+/// Beat/onset detection from spectral flux over the decoded waveform:
+/// windowed energy increases above an adaptive threshold become beats.
+/// Returns (beat times in seconds, estimated BPM).
+pub fn detect_beats(path: &Path) -> Result<(Vec<f64>, f64)> {
+    let out = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-ac", "1", "-ar", "8000", "-f", "f32le", "-"])
+        .output()?;
+    if !out.status.success() { return Err(MediaError::FfmpegFailed(out.status)); }
+    let samples: Vec<f32> = out.stdout
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    Ok(beat_track(&samples, 8000))
+}
+
+/// Pure onset-flux beat tracker (unit-testable without FFmpeg).
+pub fn beat_track(samples: &[f32], sample_rate: u32) -> (Vec<f64>, f64) {
+    let hop = 256usize; // 32ms at 8kHz
+    let win = 1024usize;
+    let mut energies: Vec<f64> = Vec::new();
+    let mut i = 0usize;
+    while i + win <= samples.len() {
+        let e: f64 = samples[i..i + win].iter().map(|s| (*s as f64) * (*s as f64)).sum();
+        energies.push(e);
+        i += hop;
+    }
+    if energies.len() < 8 { return (Vec::new(), 0.0); }
+    // Positive energy flux, adaptive threshold = local mean * 1.5.
+    let mut beats: Vec<f64> = Vec::new();
+    let mut last_beat = -1.0f64;
+    for n in 1..energies.len() {
+        let flux = energies[n] - energies[n - 1];
+        if flux <= 0.0 { continue; }
+        let lo = n.saturating_sub(16);
+        let local_mean = energies[lo..n].iter().sum::<f64>() / (n - lo) as f64;
+        let t = (n * hop) as f64 / sample_rate as f64;
+        if energies[n] > local_mean * 1.6 + 1e-6 && t - last_beat >= 0.25 {
+            beats.push(t);
+            last_beat = t;
+        }
+    }
+    // BPM from the median inter-beat interval.
+    let bpm = if beats.len() >= 2 {
+        let mut intervals: Vec<f64> = beats.windows(2).map(|w| w[1] - w[0]).collect();
+        intervals.sort_by(|a, b| a.total_cmp(b));
+        let median = intervals[intervals.len() / 2];
+        if median > 0.0 { 60.0 / median } else { 0.0 }
+    } else {
+        0.0
+    };
+    (beats, bpm)
+}
+
+/// One tracked position: time (s, source-relative) and normalized frame
+/// coordinates of the tracked patch center (0..1).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrackPoint {
+    pub t: f64,
+    pub nx: f64,
+    pub ny: f64,
+}
+
+/// Motion tracking by template matching: the center patch of the first
+/// frame (at `start_sec`) is followed through the clip with normalized
+/// cross-correlation over downscaled grayscale frames. Deterministic and
+/// dependency-free — good enough for follow-cam keyframes.
+pub fn track_motion(
+    source: &Path,
+    start_sec: f64,
+    duration_sec: f64,
+) -> Result<Vec<TrackPoint>> {
+    const W: usize = 160;
+    const H: usize = 90;
+    let fps = 5u32;
+    let frame_bytes = W * H;
+    let out = Command::new("ffmpeg")
+        .args(["-v", "error", "-ss", &format!("{start_sec:.3}"), "-i"])
+        .arg(source)
+        .args([
+            "-t", &format!("{duration_sec:.3}"),
+            "-vf", &format!("fps={fps},scale={W}:{H},format=gray"),
+            "-f", "rawvideo", "-",
+        ])
+        .output()?;
+    if !out.status.success() { return Err(MediaError::FfmpegFailed(out.status)); }
+    let frames: Vec<&[u8]> = out.stdout.chunks_exact(frame_bytes).collect();
+    if frames.len() < 2 { return Ok(Vec::new()); }
+
+    // Template: the highest-variance 24x24 patch of frame 0 — the most
+    // "interesting" region (usually the subject), not a flat background.
+    let (pw, ph) = (24usize, 24usize);
+    let (mut cx0, mut cy0) = (W / 2, H / 2);
+    {
+        let mut best_var = -1.0f64;
+        let mut y = ph / 2;
+        while y + ph / 2 < H {
+            let mut x = pw / 2;
+            while x + pw / 2 < W {
+                let mut sum = 0.0f64;
+                let mut sq = 0.0f64;
+                for py in 0..ph {
+                    for px in 0..pw {
+                        let v = frames[0][(y - ph / 2 + py) * W + (x - pw / 2 + px)] as f64;
+                        sum += v;
+                        sq += v * v;
+                    }
+                }
+                let n = (pw * ph) as f64;
+                let var = sq / n - (sum / n).powi(2);
+                if var > best_var {
+                    best_var = var;
+                    cx0 = x;
+                    cy0 = y;
+                }
+                x += 8;
+            }
+            y += 8;
+        }
+    }
+    let template: Vec<u8> = (0..ph)
+        .flat_map(|y| frames[0][(cy0 - ph / 2 + y) * W + (cx0 - pw / 2)..(cy0 - ph / 2 + y) * W + (cx0 + pw / 2)].to_vec())
+        .collect();
+    let tmean = template.iter().map(|p| *p as f64).sum::<f64>() / template.len() as f64;
+    let tvar: f64 = template.iter().map(|p| (*p as f64 - tmean).powi(2)).sum();
+
+    let mut points = Vec::new();
+    let (mut cx, mut cy) = (cx0 as i32, cy0 as i32);
+    for (fi, frame) in frames.iter().enumerate() {
+        // Search a window around the last position.
+        let (mut best, mut bx, mut by) = (f64::MIN, cx, cy);
+        let r = 20i32;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let (x, y) = (cx + dx, cy + dy);
+                if x < (pw / 2) as i32 || y < (ph / 2) as i32
+                    || x + (pw / 2) as i32 >= W as i32 || y + (ph / 2) as i32 >= H as i32
+                {
+                    continue;
+                }
+                let mut num = 0.0f64;
+                let mut dsum = 0.0f64;
+                let mut dsq = 0.0f64;
+                for py in 0..ph {
+                    for px in 0..pw {
+                        let v = frame[(y as usize - ph / 2 + py) * W + (x as usize - pw / 2 + px)] as f64;
+                        dsum += v;
+                        dsq += v * v;
+                        num += (template[py * pw + px] as f64 - tmean) * v;
+                    }
+                }
+                // num already sums (template - tmean) * v, and since the
+                // template deviations sum to zero this is the covariance.
+                let n = (pw * ph) as f64;
+                let dvar = dsq - dsum * dsum / n;
+                let score = if tvar > 0.0 && dvar > 0.0 {
+                    num / (tvar.sqrt() * dvar.sqrt())
+                } else {
+                    0.0
+                };
+                if score > best {
+                    best = score;
+                    bx = x;
+                    by = y;
+                }
+            }
+        }
+        cx = bx;
+        cy = by;
+        points.push(TrackPoint {
+            t: fi as f64 / fps as f64,
+            nx: cx as f64 / W as f64,
+            ny: cy as f64 / H as f64,
+        });
+    }
+    Ok(points)
+}
+
+/// AI background removal (CapCut "Remove BG"), fully local: u2netp ONNX
+/// segmentation per frame -> alpha mask -> the subject composited over
+/// black in a new MP4 (the export engine composites clips over the
+/// canvas the same way). The ONNX Runtime shared library and the model
+/// are sidecar files (see tools/onnx/README.md), loaded dynamically —
+/// nothing is bundled.
+pub fn remove_background(
+    source: &Path,
+    output: &Path,
+    model: &Path,
+    ort_dylib: &Path,
+) -> Result<PathBuf> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+
+    static ORT_ENV: std::sync::OnceLock<std::result::Result<ort::environment::Environment, String>> =
+        std::sync::OnceLock::new();
+    let env = ORT_ENV
+        .get_or_init(|| {
+            ort::init_from(ort_dylib)
+                .map_err(|e| e.to_string())
+                .and_then(|b| b.build().map_err(|e| e.to_string()))
+        })
+        .as_ref()
+        .map_err(|e| MediaError::Ort(format!("could not load ONNX Runtime from {}: {e}", ort_dylib.display())))?;
+    let info = probe(source)?;
+    let (w, h) = (info.width as usize, info.height as usize);
+    let fps = info.fps.clamp(1.0, 15.0);
+    let mut session = ort::session::Session::builder(env)
+        .map_err(|e| MediaError::Ort(e.to_string()))?
+        .commit_from_file(model)
+        .map_err(|e| MediaError::Ort(e.to_string()))?;
+    let input_name = session.inputs()[0].name().to_string();
+
+    // Encoder: Rust composites each frame over black with the mask
+    // (frame * alpha) and pipes RGB to a plain MP4 encoder. Deliberately
+    // no alpha-in-WebM: ffmpeg/VP9 alpha round-trips are fragile, while
+    // our export engine composites clips over the (black) canvas anyway.
+    let mut encoder = Command::new("ffmpeg")
+        .args(["-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{w}x{h}"), "-r", &format!("{fps:.2}"), "-i", "-", "-i"])
+        .arg(source)
+        .args([
+            "-map", "0:v", "-map", "1:a?",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
+            "-c:a", "aac", "-shortest",
+        ])
+        .arg(output)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut enc_stdin = encoder.stdin.take().expect("encoder stdin");
+
+    // Decoder: RGB frames at the same rate.
+    let mut decoder = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(source)
+        .args(["-vf", "fps=15,format=rgb24", "-f", "rawvideo", "-"])
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let mut dec_stdout = decoder.stdout.take().expect("decoder stdout");
+
+    const S: usize = 320;
+    let frame_len = w * h * 3;
+    let mut frame = vec![0u8; frame_len];
+    let mut frames_done = 0usize;
+    loop {
+        let mut filled = 0usize;
+        while filled < frame_len {
+            match dec_stdout.read(&mut frame[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) => return Err(MediaError::Spawn(e)),
+            }
+        }
+        if filled < frame_len { break; }
+
+        // Downscale (nearest) to 320x320 + ImageNet normalization (the
+        // normalization rembg uses for u2net-family models).
+        let mut input = vec![0f32; 3 * S * S];
+        for y in 0..S {
+            for x in 0..S {
+                let sx = (x * w / S).min(w - 1);
+                let sy = (y * h / S).min(h - 1);
+                let base = (sy * w + sx) * 3;
+                let means = [0.485f32, 0.456, 0.406];
+                let stds = [0.229f32, 0.224, 0.225];
+                for c in 0..3 {
+                    input[c * S * S + y * S + x] =
+                        ((frame[base + c] as f32 / 255.0) - means[c]) / stds[c];
+                }
+            }
+        }
+        let tensor = ort::value::Tensor::from_array(([1usize, 3, S, S], input))
+            .map_err(|e| MediaError::Ort(e.to_string()))?;
+        let outputs = session
+            .run(ort::inputs![input_name.as_str() => tensor])
+            .map_err(|e| MediaError::Ort(e.to_string()))?;
+        let (_, mask_data) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| MediaError::Ort(e.to_string()))?;
+        // Min-max normalize the saliency map (rembg does the same).
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for v in mask_data.iter() {
+            lo = lo.min(*v);
+            hi = hi.max(*v);
+        }
+        let range = (hi - lo).max(1e-6);
+        if std::env::var("NIGHTCUT_BG_DEBUG").is_ok() && frames_done == 0 {
+            let c = mask_data[(S / 2) * S + S / 2];
+            let corner = mask_data[2 * S + 2];
+            eprintln!("mask lo={lo} hi={hi} center={c} corner={corner}");
+        }
+        // Upscale mask (nearest) and composite the frame over black.
+        let mut rgb = vec![0u8; frame_len];
+        for y in 0..h {
+            for x in 0..w {
+                let mx = (x * S / w.max(1)).min(S - 1);
+                let my = (y * S / h.max(1)).min(S - 1);
+                let a = ((mask_data[my * S + mx] - lo) / range).clamp(0.0, 1.0);
+                let base = (y * w + x) * 3;
+                for c in 0..3 {
+                    rgb[base + c] = (frame[base + c] as f32 * a) as u8;
+                }
+            }
+        }
+        enc_stdin.write_all(&rgb)?;
+        frames_done += 1;
+    }
+    drop(enc_stdin);
+    let enc_out = encoder.wait_with_output()?;
+    let _ = decoder.wait();
+    if !enc_out.status.success() || frames_done == 0 {
+        return Err(MediaError::Ort(format!(
+            "encoder failed after {frames_done} frames: {}",
+            String::from_utf8_lossy(&enc_out.stderr).chars().take(200).collect::<String>()
+        )));
+    }
+    Ok(output.to_path_buf())
+}
+
 /// Deterministic cache file name for a source file, based on its path and
 /// modification time, e.g. `a1b2c3d4.proxy.mp4`.
 pub fn cache_key(path: &Path) -> String {
@@ -229,6 +565,79 @@ pub fn cache_key(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs ffmpeg flite + a generated video"]
+    fn live_tts_and_tracking() {
+        let dir = std::env::temp_dir();
+        // TTS produces a real WAV.
+        let wav = dir.join("nc-tts-test.wav");
+        synthesize_speech("hello night cut", "slt", &wav).expect("tts");
+        let peaks = waveform_peaks(&wav, 50).expect("waveform tts");
+        assert!(peaks.iter().any(|p| *p > 0.1), "tts wav should contain speech");
+
+        // Tracking: white square moving right across a black 320x180 frame.
+        let vid = dir.join("nc-track-test.mp4");
+        let status = Command::new("ffmpeg")
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i",
+                   "color=c=black:s=320x180:r=10:d=2",
+                   "-vf", "geq=lum='if(between(X\\,20+120*T\\,50+120*T)*between(Y\\,75\\,105)\\,255\\,0)':cb=128:cr=128",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&vid).status().unwrap();
+        assert!(status.success());
+        let points = track_motion(&vid, 0.0, 2.0).expect("track");
+        assert!(points.len() >= 8, "points: {}", points.len());
+        let first = points.first().unwrap().nx;
+        let last = points.last().unwrap().nx;
+        assert!(last > first + 0.2, "square should move right: {first} -> {last}");
+    }
+
+    #[test]
+    #[ignore = "needs ONNX sidecar files (NIGHTCUT_ORT_DIR) and ffmpeg"]
+    fn live_background_removal() {
+        let ort_dir = std::env::var("NIGHTCUT_ORT_DIR").expect("NIGHTCUT_ORT_DIR");
+        let dir = PathBuf::from(&ort_dir);
+        let dylib = dir.join("libonnxruntime.so");
+        let model = dir.join("u2netp.onnx");
+        // Scene: bright subject blob centered on a dark background.
+        let src = std::env::temp_dir().join("nc-bg-src.mp4");
+        let status = Command::new("ffmpeg")
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i",
+                   "color=c=0x101030:s=320x240:r=10:d=1",
+                   "-vf", "geq=lum='if(lt(hypot(X-160\\,Y-120)\\,55)\\,230\\,16)':cb=90:cr=160",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&src).status().unwrap();
+        assert!(status.success());
+        let out = std::env::temp_dir().join("nc-bg-out.mp4");
+        remove_background(&src, &out, &model, &dylib).expect("remove bg");
+        // Decode one frame: subject stays bright, background goes black.
+        let raw = Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(&out)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+            .output().unwrap();
+        assert!(raw.status.success());
+        let px = |x: usize, y: usize| raw.stdout[y * 320 + x];
+        let (center, corner) = (px(160, 120), px(4, 4));
+        assert!(center > 150, "subject should stay bright, got {center}");
+        assert!(corner < 60, "background should be removed to black, got {corner}");
+    }
+
+    #[test]
+    fn beat_track_finds_periodic_onsets() {
+        // 2 seconds of 8kHz audio: short loud bursts every 0.5s (120 BPM).
+        let sr = 8000usize;
+        let mut samples = vec![0.0f32; sr * 2];
+        for burst in 0..4 {
+            let start = burst * sr / 2;
+            for i in 0..400 {
+                samples[start + i] = 0.9;
+            }
+        }
+        let (beats, bpm) = beat_track(&samples, sr as u32);
+        assert!(beats.len() >= 3, "beats: {beats:?}");
+        assert!((bpm - 120.0).abs() < 30.0, "bpm: {bpm}");
+    }
 
     #[test]
     fn whisper_timestamps_and_json_parse() {

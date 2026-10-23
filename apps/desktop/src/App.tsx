@@ -27,6 +27,25 @@ export default function App() {
           const s = useEditor.getState();
           s.setPlaying(!s.playing);
         }
+      } else if (mod && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        useEditor.getState().splitSelected();
+      } else if (mod && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        setExportOpen(true);
+      } else if (e.key === "m" || e.key === "M") {
+        if ((e.target as HTMLElement).tagName === "BODY") {
+          const s = useEditor.getState();
+          s.setMarkers([...(s.project.markers ?? []), Math.round(s.playhead * 100) / 100].sort((a, b) => a - b));
+        }
+      } else if (e.key === "Home") {
+        useEditor.getState().setPlayhead(0);
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        if ((e.target as HTMLElement).tagName === "BODY") {
+          const s = useEditor.getState();
+          const step = (e.shiftKey ? 1 : 1 / 30) * (e.key === "ArrowRight" ? 1 : -1);
+          s.setPlayhead(Math.max(0, s.playhead + step));
+        }
       }
     };
     window.addEventListener("keydown", onKey);

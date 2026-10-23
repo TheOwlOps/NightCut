@@ -55,6 +55,14 @@ your machine, and stays small:
       grids, player bar with aspect pills + fullscreen, inspector tabs and
       editable value boxes, timeline track headers (hide/mute/lock — all
       functional), filmstrip clips, transition/keyframe badges, Fit zoom
+- [x] Wave 6 (the rest of CapCut, locally): AI background removal
+      (u2netp ONNX sidecar, tools/onnx), motion tracking -> follow-cam
+      keyframes, text-to-speech (flite, 4 voices), beat detection ->
+      timeline markers + snapping, voice pitch shift + .cube LUT effects,
+      linear-gradient mask, animation presets, smooth slow-mo
+      (minterpolate), stickers tab, proxy mode (auto proxy on import +
+      preview toggle), export presets (720p/1080p caps, GIF) and the
+      full shortcut set (Ctrl+B split, Ctrl+E export, M marker, arrows)
 - [ ] Phase 1 leftovers: music mixing polish in UI
 - [ ] Phase 2 (the "smooth like the big editors" phase): proxy cache,
       thumbnail/waveform rendering on the timeline, pre-render around playhead
