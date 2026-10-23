@@ -114,27 +114,25 @@ export default function MediaBin() {
         hidden
         onChange={(e) => importBlobs(e.target.files)}
       />
-      <div className="media-list">
-        {media.length === 0 && (
-          <p className="hint">Import a clip to start. It is added to the timeline automatically.</p>
-        )}
+      {media.length === 0 && (
+        <p className="hint">Import a clip to start. It is added to the timeline automatically.</p>
+      )}
+      <div className="lib-grid">
         {media.map((m) => (
-          <div key={m.id} className="media-item">
-            {m.thumb ? (
-              <img src={m.thumb} alt="" />
-            ) : m.kind === "video" ? (
-              <video src={m.url} muted preload="metadata" />
-            ) : (
-              <div className="audio-thumb">♪</div>
-            )}
-            <div className="media-meta">
-              <span className="media-name" title={m.name}>{m.name}</span>
-              <span className="media-dur">{m.duration.toFixed(1)}s</span>
-            </div>
-            <button onClick={() => addToTimeline(m.id)} title="Add to timeline again">
-              +
-            </button>
-          </div>
+          <button key={m.id} className="lib-card" onClick={() => addToTimeline(m.id)} title={m.name}>
+            <span className="lib-tile">
+              {m.thumb ? (
+                <img src={m.thumb} alt="" />
+              ) : m.kind === "video" ? (
+                <video src={m.url} muted preload="metadata" />
+              ) : (
+                "♪"
+              )}
+              <span className="lib-dur">{m.duration.toFixed(1)}s</span>
+              <span className="lib-add">+</span>
+            </span>
+            <span className="lib-name">{m.name}</span>
+          </button>
         ))}
       </div>
     </div>

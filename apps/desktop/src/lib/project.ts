@@ -332,6 +332,9 @@ export interface Track {
   id: string;
   kind: TrackKind;
   clips: Clip[];
+  muted?: boolean;
+  hidden?: boolean;
+  locked?: boolean;
 }
 
 export interface Project {
@@ -398,6 +401,9 @@ export function toRustJson(p: Project): string {
       tracks: p.tracks.map((t) => ({
         id: t.id,
         kind: t.kind,
+        ...(t.muted ? { muted: true } : {}),
+        ...(t.hidden ? { hidden: true } : {}),
+        ...(t.locked ? { locked: true } : {}),
         clips: t.clips.map((c) => ({
           id: c.id,
           source: c.source,

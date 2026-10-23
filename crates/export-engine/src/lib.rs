@@ -324,6 +324,7 @@ pub fn build_ffmpeg_args_stabilized(
     // Music/audio-track clips become extra inputs after the video inputs.
     let audio_track = project.tracks.iter().find(|t| t.kind == TrackKind::Audio);
     let music: Vec<_> = audio_track
+        .filter(|t| !t.muted)
         .map(|t| t.clips.iter().filter(|c| !c.source.is_empty()).collect())
         .unwrap_or_default();
     for clip in &music {

@@ -11,17 +11,22 @@ import {
  * the same non-destructive data the Rust export engine renders at export.
  */
 export default function Preview() {
-  const { project, media, playhead, playing, setPlayhead, setPlaying } = useEditor();
+  const { project, media, playhead, playing, setPlayhead, setPlaying, setCanvas } = useEditor();
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const videoTrack = project.tracks.find((t) => t.kind === "video");
-  const active = videoTrack?.clips.find(
-    (c) => playhead >= c.timelineStart && playhead < clipEnd(c),
-  );
-  const activeMedia = active ? media.find((m) => m.name === active.source) : undefined;
-  const activeText = project.tracks
-    .find((t) => t.kind === "text")
-    ?.clips.filter((c) => playhead >= c.timelineStart && playhead < clipEnd(c));
+  const textTrack = project.tracks.find((t) => t.kind === "text");
+  const active = videoTrack?.hidden
+    ? undefined
+    : videoTrack?.clips.find(
+        (c) => playhead >= c.timelineStart && playhead < clipEnd(c),
+      );
+  const activeMedia = active
+    ? media.find((m) => m.path === active.source || m.name === active.source)
+    : undefined;
+  const activeText = textTrack?.hidden
+    ? []
+    : textTrack?.clips.filter((c) => playhead >= c.timelineStart && playhead < clipEnd(c));
 
   // Keep the <video> element in sync with the timeline playhead.
   // sourceAtPlayed handles constant speed, speed curves and freeze frames.
@@ -101,14 +106,43 @@ export default function Preview() {
           </div>
         )}
       </div>
-      <div className="transport">
-        <button onClick={() => setPlayhead(0)} title="Back to start">⏮</button>
-        <button className="play-btn" onClick={() => setPlaying(!playing)}>
-          {playing ? "⏸" : "▶"}
+      <div className="player-bar">
+        <div className="transport">
+          <button className="play-btn" onClick={() => setPlayhead(0)} title="Back to start">⏮</button>
+          <button className="play-btn" onClick={() => setPlaying(!playing)}>
+            {playing ? "⏸" : "▶"}
+          </button>
+          <span className="timecode">
+            <b>{formatTime(playhead)}</b> / {formatTime(projectDuration(project))}
+          </span>
+        </div>
+        <span className="spacer" />
+        <div className="aspect-group" title="Canvas aspect ratio">
+          {([
+            { label: "9:16", w: 1080, h: 1920 },
+            { label: "16:9", w: 1920, h: 1080 },
+            { label: "1:1", w: 1080, h: 1080 },
+            { label: "4:3", w: 1440, h: 1080 },
+          ]).map((p) => (
+            <button
+              key={p.label}
+              className={project.canvas.width === p.w && project.canvas.height === p.h ? "active" : ""}
+              onClick={() => setCanvas(p)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <button
+          className="play-btn"
+          title="Fullscreen preview"
+          onClick={() => {
+            const el = document.querySelector(".preview-stage");
+            if (el) void el.requestFullscreen?.();
+          }}
+        >
+          ⛶
         </button>
-        <span className="timecode">
-          {formatTime(playhead)} / {formatTime(projectDuration(project))}
-        </span>
       </div>
     </section>
   );

@@ -10,6 +10,14 @@ import {
   newId,
 } from "../../lib/project";
 
+/** Tile icons for the Effects library grid. */
+const EFFECT_ICONS: Partial<Record<Effect["type"], string>> = {
+  adjust: "🎚", grayscale: "◐", sepia: "🟤", blur: "🌫", sharpen: "🔪",
+  vignette: "◉", temperature: "🌡", mirror: "🪞", invert: "◑",
+  fade_in: "↗", fade_out: "↘", reverse: "⏪", chroma_key: "🟢",
+  denoise: "🔇", mask: "🎭", stabilize: "🎯",
+};
+
 type Tab = "media" | "text" | "effects" | "filters" | "transitions" | "audio" | "captions" | "templates";
 
 const TABS: { id: Tab; icon: string; label: string }[] = [
@@ -87,15 +95,17 @@ function TextPanel() {
   return (
     <div className="dock-panel">
       <div className="panel-title">Text presets</div>
-      <div className="preset-grid">
+      <div className="lib-grid">
         {TEXT_PRESETS.map((p) => (
           <button
             key={p.name}
-            className="preset-card"
+            className="lib-card"
             onClick={() => addTextClip(p.name === "Title" ? "Your title" : "Your text", { fontSize: p.fontSize, color: p.color })}
           >
-            <span style={{ color: p.color, fontSize: Math.min(26, p.fontSize / 3) }}>Ag</span>
-            <span>{p.name}</span>
+            <span className="lib-tile" style={{ background: "#17171c" }}>
+              <span style={{ color: p.color, fontSize: Math.min(28, p.fontSize / 3), fontWeight: 800 }}>Ag</span>
+            </span>
+            <span className="lib-name">{p.name}</span>
           </button>
         ))}
       </div>
@@ -118,10 +128,13 @@ function EffectsPanel() {
     <div className="dock-panel">
       <div className="panel-title">Effects</div>
       {!selected && <p className="hint">Select a video clip first — effects apply to it.</p>}
-      <div className="preset-grid">
-        {types.map((t) => (
-          <button key={t} className="preset-card" disabled={!selected} onClick={() => addEffect(t)}>
-            <span>{EFFECT_LABELS[t]}</span>
+      <div className="lib-grid">
+        {types.map((t, i) => (
+          <button key={t} className="lib-card" disabled={!selected} onClick={() => addEffect(t)}>
+            <span className="lib-tile" style={{ background: `linear-gradient(135deg, hsl(${i * 47} 45% 30%), hsl(${i * 47 + 40} 45% 14%))` }}>
+              {EFFECT_ICONS[t] ?? "✨"}
+            </span>
+            <span className="lib-name">{EFFECT_LABELS[t]}</span>
           </button>
         ))}
       </div>
@@ -137,11 +150,13 @@ function FiltersPanel() {
     <div className="dock-panel">
       <div className="panel-title">Filters</div>
       {!selected && <p className="hint">Select a video clip first — the filter applies to it.</p>}
-      <div className="preset-grid">
+      <div className="lib-grid">
         {FILTER_PRESETS.map((f) => (
-          <button key={f.name} className="preset-card" disabled={!selected} onClick={() => applyFilterPreset(f.effects)}>
-            <span className="filter-swatch" data-filter={f.name} />
-            <span>{f.name}</span>
+          <button key={f.name} className="lib-card" disabled={!selected} onClick={() => applyFilterPreset(f.effects)}>
+            <span className="lib-tile" style={{ padding: 0 }}>
+              <span className="filter-swatch" data-filter={f.name} style={{ height: "100%", borderRadius: 0 }} />
+            </span>
+            <span className="lib-name">{f.name}</span>
           </button>
         ))}
       </div>
@@ -160,11 +175,13 @@ function TransitionsPanel() {
         Select a clip (not the first one) and pick a transition — it blends that clip in from the
         previous clip. Duration is adjustable in the Inspector.
       </p>
-      <div className="preset-grid">
-        {TRANSITION_PRESETS.map((t) => (
-          <button key={t.kind} className="preset-card" disabled={!selected} onClick={() => applyTransition(t.kind)}>
-            <span>⇄</span>
-            <span>{t.label}</span>
+      <div className="lib-grid">
+        {TRANSITION_PRESETS.map((t, i) => (
+          <button key={t.kind} className="lib-card" disabled={!selected} onClick={() => applyTransition(t.kind)}>
+            <span className="lib-tile" style={{ background: `linear-gradient(${90 + i * 30}deg, #20303c 45%, #3d5a66 55%)` }}>
+              ⇄
+            </span>
+            <span className="lib-name">{t.label}</span>
           </button>
         ))}
       </div>

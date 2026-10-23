@@ -53,5 +53,5 @@ export default function Waveform({ url, color }: { url: string; color: string })
       cancelled = true;
     };
   }, [url, color]);
-  return <canvas ref={ref} className="clip-wave" width={240} height={18} />;
+  return <canvas ref={ref} className="clip-wave" width={240} height={36} />;
 }

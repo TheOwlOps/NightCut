@@ -16,9 +16,25 @@ export default function Inspector() {
     ? project.tracks.find((t) => t.id === selected.trackId)?.clips.find((c) => c.id === selected.clipId)
     : undefined;
 
+  const trackKind = selected
+    ? project.tracks.find((t) => t.id === selected.trackId)?.kind
+    : undefined;
+  const headTabs = clip
+    ? trackKind === "text"
+      ? ["Text", "Style"]
+      : trackKind === "audio"
+        ? ["Audio", "Effects"]
+        : ["Video", "Audio", "Animation", "Adjust"]
+    : ["Project"];
+
   return (
     <aside className="inspector">
-      <div className="panel-title">Inspector</div>
+      <div className="insp-head">
+        {headTabs.map((t, i) => (
+          <span key={t} className={i === 0 ? "insp-tab active" : "insp-tab"}>{t}</span>
+        ))}
+      </div>
+      <div className="insp-body">
       <div className="field">
         <span>Canvas</span>
         <div className="row">
@@ -191,6 +207,7 @@ export default function Inspector() {
       ) : (
         <p className="hint">Select a clip on the timeline to edit its properties.</p>
       )}
+      </div>
     </aside>
   );
 }
@@ -208,7 +225,18 @@ function Slider({
         type="range" min={min} max={max} step={step} value={value}
         onChange={(e) => onChange(Number(e.target.value))}
       />
-      <b>{value.toFixed(step < 0.1 ? 2 : 0)}</b>
+      <b
+        contentEditable
+        suppressContentEditableWarning
+        title="Type a value"
+        onBlur={(e) => {
+          const v = Number(e.currentTarget.textContent?.replace(/[^0-9.\-]/g, ""));
+          if (!Number.isNaN(v)) onChange(Math.min(max, Math.max(min, v)));
+          e.currentTarget.textContent = value.toFixed(step < 0.1 ? 2 : 0);
+        }}
+      >
+        {value.toFixed(step < 0.1 ? 2 : 0)}
+      </b>
     </label>
   );
 }

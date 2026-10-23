@@ -51,6 +51,10 @@ your machine, and stays small:
       local auto-captions via whisper.cpp, native desktop file picker
       (real paths for probe/export/captions), timeline thumbnails +
       waveforms, voiceover recording
+- [x] Wave 5 (CapCut look): near-black + teal design system, library card
+      grids, player bar with aspect pills + fullscreen, inspector tabs and
+      editable value boxes, timeline track headers (hide/mute/lock — all
+      functional), filmstrip clips, transition/keyframe badges, Fit zoom
 - [ ] Phase 1 leftovers: music mixing polish in UI
 - [ ] Phase 2 (the "smooth like the big editors" phase): proxy cache,
       thumbnail/waveform rendering on the timeline, pre-render around playhead

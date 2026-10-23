@@ -56,9 +56,12 @@ export default function Timeline() {
   };
   const stopDrag = () => (drag.current = null);
 
+  const rowHeight = (kind: string) => (kind === "video" ? 56 : kind === "audio" ? 40 : 30);
+
   const startClipDrag = (e: React.PointerEvent, trackId: string, clip: Clip, mode: DragMode["type"], edge?: "left" | "right") => {
     e.stopPropagation();
     state.select({ trackId, clipId: clip.id });
+    if (project.tracks.find((t) => t.id === trackId)?.locked) return;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     if (mode === "move") {
       drag.current = { type: "move", trackId, clipId: clip.id, grabOffset: timeAt(e.clientX) - clip.timelineStart };
@@ -90,6 +93,15 @@ export default function Timeline() {
           🧲 Snap
         </button>
         <span className="spacer" />
+        <button
+          onClick={() => {
+            const el = tracksRef.current;
+            if (el) state.setZoom(Math.max(8, Math.floor(el.clientWidth / duration)));
+          }}
+          title="Fit the whole project to the visible width"
+        >
+          ⤢ Fit
+        </button>
         <label>
           Zoom{" "}
           <input
@@ -103,70 +115,115 @@ export default function Timeline() {
         <span className="timecode">{formatTime(playhead)}</span>
       </div>
 
-      <div className="timeline-scroll" ref={tracksRef}>
-        <div className="timeline-inner" style={{ width }}>
-          <div
-            className="ruler"
-            onPointerDown={(e) => {
-              drag.current = { type: "scrub" };
-              state.setPlayhead(timeAt(e.clientX));
-            }}
-          >
-            {Array.from({ length: Math.ceil(duration) + 1 }, (_, s) => (
-              <span key={s} className="tick" style={{ left: s * zoom }}>
-                {s % 5 === 0 ? `${s}s` : ""}
-              </span>
-            ))}
-          </div>
-
+      <div className="timeline-body">
+        <div className="track-headers">
+          <div className="ruler-spacer" />
           {project.tracks.map((track) => (
-            <div key={track.id} className={`track track-${track.kind}`}>
-              <div className="track-label">{track.kind}</div>
-              {track.clips.map((clip) => {
-                const isSel = selected?.clipId === clip.id;
-                return (
-                  <div
-                    key={clip.id}
-                    className={`clip clip-${track.kind}${isSel ? " selected" : ""}`}
-                    style={{
-                      left: clip.timelineStart * zoom,
-                      width: Math.max(8, clipDuration(clip) * zoom),
-                    }}
-                    onPointerDown={(e) => startClipDrag(e, track.id, clip, "move")}
-                    title={clip.text ?? clip.source}
-                  >
-                    <span
-                      className="trim-handle left"
-                      onPointerDown={(e) => startClipDrag(e, track.id, clip, "trim", "left")}
-                    />
-                    {(() => {
-                      const item = state.media.find(
-                        (m) => m.path === clip.source || m.name === clip.source,
-                      );
-                      return item?.thumb && track.kind === "video" ? (
-                        <img className="clip-thumb" src={item.thumb} alt="" draggable={false} />
-                      ) : null;
-                    })()}
-                    <span className="clip-name">{clip.text ?? clip.source}</span>
-                    {(() => {
-                      const item = state.media.find(
-                        (m) => m.path === clip.source || m.name === clip.source,
-                      );
-                      return item && track.kind !== "text" ? (
-                        <Waveform url={item.url} color={track.kind === "audio" ? "#7dd87d" : "#5aa2ff"} />
-                      ) : null;
-                    })()}
-                    <span
-                      className="trim-handle right"
-                      onPointerDown={(e) => startClipDrag(e, track.id, clip, "trim", "right")}
-                    />
-                  </div>
-                );
-              })}
+            <div key={track.id} className="track-header" style={{ height: rowHeight(track.kind) }}>
+              <span className="th-icon">{track.kind === "video" ? "🎬" : track.kind === "audio" ? "🎵" : "T"}</span>
+              <button
+                className={track.hidden ? "off" : ""}
+                title={track.hidden ? "Show track" : "Hide track (preview)"}
+                onClick={() => state.toggleTrack(track.id, "hidden")}
+              >
+                {track.hidden ? "🙈" : "👁"}
+              </button>
+              <button
+                className={track.muted ? "off" : ""}
+                title={track.muted ? "Unmute track" : "Mute track"}
+                onClick={() => state.toggleTrack(track.id, "muted")}
+              >
+                {track.muted ? "🔇" : "🔊"}
+              </button>
+              <button
+                className={track.locked ? "" : "off"}
+                title={track.locked ? "Unlock track" : "Lock track"}
+                onClick={() => state.toggleTrack(track.id, "locked")}
+              >
+                {track.locked ? "🔒" : "🔓"}
+              </button>
             </div>
           ))}
+        </div>
 
-          <div className="playhead" style={{ left: playhead * zoom }} />
+        <div className="timeline-scroll" ref={tracksRef}>
+          <div className="timeline-inner" style={{ width }}>
+            <div
+              className="ruler"
+              onPointerDown={(e) => {
+                drag.current = { type: "scrub" };
+                state.setPlayhead(timeAt(e.clientX));
+              }}
+            >
+              {Array.from({ length: Math.ceil(duration) + 1 }, (_, s) => (
+                <span key={s} className="tick" style={{ left: s * zoom }}>
+                  {s % 5 === 0 ? `${s}s` : ""}
+                </span>
+              ))}
+            </div>
+
+            {project.tracks.map((track) => (
+              <div
+                key={track.id}
+                className={`track track-${track.kind}${track.hidden ? " dim" : ""}`}
+                style={{ height: rowHeight(track.kind) }}
+              >
+                {track.clips.map((clip) => {
+                  const isSel = selected?.clipId === clip.id;
+                  const item = state.media.find(
+                    (m) => m.path === clip.source || m.name === clip.source,
+                  );
+                  const dur = clipDuration(clip);
+                  return (
+                    <div
+                      key={clip.id}
+                      className={`clip clip-${track.kind}${isSel ? " selected" : ""}${clip.freezeDuration !== undefined ? " frozen" : ""}`}
+                      style={{
+                        left: clip.timelineStart * zoom,
+                        width: Math.max(8, dur * zoom),
+                        height: rowHeight(track.kind) - 8,
+                      }}
+                      onPointerDown={(e) => startClipDrag(e, track.id, clip, "move")}
+                      title={clip.text ?? clip.source}
+                    >
+                      <span
+                        className="trim-handle left"
+                        onPointerDown={(e) => startClipDrag(e, track.id, clip, "trim", "left")}
+                      />
+                      {item?.thumb && track.kind === "video" && (
+                        <span
+                          className="clip-filmstrip"
+                          style={{ backgroundImage: `url(${item.thumb})` }}
+                        />
+                      )}
+                      {clip.transitionIn && <span className="clip-badge">⇄</span>}
+                      {clip.freezeDuration !== undefined && <span className="clip-badge">❄</span>}
+                      <span className="clip-name">{clip.text ?? clip.source}</span>
+                      {item && track.kind === "audio" && (
+                        <Waveform url={item.url} color="#4ade80" />
+                      )}
+                      {item && track.kind === "video" && (
+                        <Waveform url={item.url} color="rgba(120,180,255,0.55)" />
+                      )}
+                      {(clip.keyframes?.length ?? 0) > 0 && dur > 0 && (
+                        <span className="clip-kfs">
+                          {clip.keyframes!.map((kf, ki) => (
+                            <i key={ki} style={{ left: `${(kf.at / dur) * 100}%` }}>◆</i>
+                          ))}
+                        </span>
+                      )}
+                      <span
+                        className="trim-handle right"
+                        onPointerDown={(e) => startClipDrag(e, track.id, clip, "trim", "right")}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+
+            <div className="playhead" style={{ left: playhead * zoom }} />
+          </div>
         </div>
       </div>
     </section>

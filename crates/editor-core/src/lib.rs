@@ -227,11 +227,19 @@ pub struct Track {
     pub kind: TrackKind,
     #[serde(default)]
     pub clips: Vec<Clip>,
+    /// CapCut track toggles: muted (audio excluded at export), hidden
+    /// (excluded from preview), locked (not editable on the timeline).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
 }
 
 impl Track {
     pub fn new(id: impl Into<String>, kind: TrackKind) -> Self {
-        Self { id: id.into(), kind, clips: Vec::new() }
+        Self { id: id.into(), kind, clips: Vec::new(), muted: false, hidden: false, locked: false }
     }
     fn clip_mut(&mut self, clip_id: &str) -> Result<&mut Clip> {
         self.clips.iter_mut().find(|c| c.id == clip_id)

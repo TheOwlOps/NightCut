@@ -51,6 +51,7 @@ interface EditorState {
   addCaptionCues: (cues: { start: number; end: number; text: string }[], offset: number) => number;
   addAudioAtPlayhead: (mediaId: string) => void;
   setMediaThumb: (mediaId: string, thumb: string) => void;
+  toggleTrack: (trackId: string, flag: "muted" | "hidden" | "locked") => void;
   applyFilterPreset: (effects: Effect[]) => void;
   applyTransition: (kind: string) => void;
   setSelectedSpeed: (speed: number) => void;
@@ -76,7 +77,7 @@ interface EditorState {
   addEffect: (type: Effect["type"]) => void;
   removeEffect: (index: number) => void;
   updateEffect: (index: number, effect: Effect) => void;
-  setCanvas: (preset: "9:16" | "16:9" | "1:1") => void;
+  setCanvas: (preset: "9:16" | "16:9" | "1:1" | { w: number; h: number }) => void;
   loadProject: (p: Project) => void;
   undo: () => void;
   redo: () => void;
@@ -214,6 +215,15 @@ export const useEditor = create<EditorState>((set, get) => ({
       ...withHistory(s, next),
       selected: { trackId: "track-audio", clipId: clip.id },
     });
+  },
+
+  toggleTrack: (trackId, flag) => {
+    const s = get();
+    const next = structuredClone(s.project);
+    const track = next.tracks.find((t) => t.id === trackId);
+    if (!track) return;
+    track[flag] = !track[flag];
+    set({ project: next });
   },
 
   setMediaThumb: (mediaId, thumb) => {
@@ -512,11 +522,13 @@ export const useEditor = create<EditorState>((set, get) => ({
     const s = get();
     const next = structuredClone(s.project);
     next.canvas =
-      preset === "9:16"
-        ? { width: 1080, height: 1920, fps: 30 }
-        : preset === "16:9"
-          ? { width: 1920, height: 1080, fps: 30 }
-          : { width: 1080, height: 1080, fps: 30 };
+      typeof preset === "object"
+        ? { width: preset.w, height: preset.h, fps: 30 }
+        : preset === "9:16"
+          ? { width: 1080, height: 1920, fps: 30 }
+          : preset === "16:9"
+            ? { width: 1920, height: 1080, fps: 30 }
+            : { width: 1080, height: 1080, fps: 30 };
     set({ project: next });
   },
 
