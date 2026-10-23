@@ -264,6 +264,31 @@ function EffectControls({ effect, onChange }: { effect: Effect; onChange: (e: Ef
     case "denoise":
       return <Slider label="Strength" value={effect.strength} min={0} max={1} step={0.05}
         onChange={(v) => onChange({ ...effect, strength: v })} />;
+    case "mask":
+      return (
+        <>
+          <div className="row">
+            <button className="chip" onClick={() => onChange({ ...effect, shape: "circle" })}>● Circle</button>
+            <button className="chip" onClick={() => onChange({ ...effect, shape: "rect" })}>■ Rect</button>
+            <button className="chip" onClick={() => onChange({ ...effect, invert: !effect.invert })}>
+              {effect.invert ? "Inverted" : "Normal"}
+            </button>
+          </div>
+          <Slider label="Size" value={effect.size} min={0.1} max={1} step={0.05}
+            onChange={(v) => onChange({ ...effect, size: v })} />
+          <Slider label="Feather" value={effect.feather} min={0} max={1} step={0.05}
+            onChange={(v) => onChange({ ...effect, feather: v })} />
+          <p className="hint">The mask is exact at export; the preview does not simulate it yet.</p>
+        </>
+      );
+    case "stabilize":
+      return (
+        <>
+          <Slider label="Smoothing" value={effect.smoothing} min={0} max={30} step={1}
+            onChange={(v) => onChange({ ...effect, smoothing: Math.round(v) })} />
+          <p className="hint">Two-pass vidstab at export (desktop). Applies to constant-speed clips.</p>
+        </>
+      );
     default:
       return null; // grayscale / mirror / invert are on-off effects
   }

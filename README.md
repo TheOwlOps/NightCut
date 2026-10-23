@@ -47,6 +47,10 @@ your machine, and stays small:
       presets, reverse effect, timeline magnet snapping
 - [x] Wave 3: speed curve presets, keyframe animation (scale/rotate/opacity),
       freeze frame, chroma key (green screen), audio denoise, local templates
+- [x] Wave 4: shape masks (rect/circle), two-pass stabilization (vidstab),
+      local auto-captions via whisper.cpp, native desktop file picker
+      (real paths for probe/export/captions), timeline thumbnails +
+      waveforms, voiceover recording
 - [ ] Phase 1 leftovers: music mixing polish in UI
 - [ ] Phase 2 (the "smooth like the big editors" phase): proxy cache,
       thumbnail/waveform rendering on the timeline, pre-render around playhead

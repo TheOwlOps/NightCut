@@ -18,7 +18,9 @@ export type Effect =
   | { type: "fade_out"; duration: number }
   | { type: "reverse" }
   | { type: "chroma_key"; color: string; similarity: number; blend: number }
-  | { type: "denoise"; strength: number };
+  | { type: "denoise"; strength: number }
+  | { type: "mask"; shape: string; size: number; feather: number; invert: boolean }
+  | { type: "stabilize"; smoothing: number };
 
 export const EFFECT_LABELS: Record<Effect["type"], string> = {
   adjust: "Brightness / Contrast",
@@ -35,6 +37,8 @@ export const EFFECT_LABELS: Record<Effect["type"], string> = {
   reverse: "Reverse (export only)",
   chroma_key: "Chroma key (green screen)",
   denoise: "Noise reduction (audio)",
+  mask: "Mask (shape)",
+  stabilize: "Stabilize",
 };
 
 export interface SpeedPoint {
@@ -213,6 +217,8 @@ export function defaultEffect(type: Effect["type"]): Effect {
     case "fade_out": return { type, duration: 0.5 };
     case "chroma_key": return { type, color: "#00ff00", similarity: 0.3, blend: 0.1 };
     case "denoise": return { type, strength: 0.5 };
+    case "mask": return { type, shape: "circle", size: 0.7, feather: 0.2, invert: false };
+    case "stabilize": return { type, smoothing: 10 };
     default: return { type } as Effect;
   }
 }
@@ -295,6 +301,11 @@ export function effectFfmpegFilters(fx: Effect, clipDur: number): { video: strin
         audio: [`afade=t=out:st=${st.toFixed(3)}:d=${fx.duration.toFixed(3)}`],
       };
     }
+    case "mask":
+    case "stabilize":
+      // No direct filter: mask renders via the matte, stabilize via the
+      // two-pass vidstab flow (see buildFfmpegCommand / export-engine).
+      return { video: [], audio: [] };
   }
 }
 
@@ -466,7 +477,24 @@ export function buildFfmpegCommand(p: Project, output = "nightcut-export.mp4"): 
   video.forEach((c, i) => {
     const dur = clipDuration(c);
     const hasChroma = (c.effects ?? []).some((fx) => fx.type === "chroma_key");
-    const needsAlpha = hasChroma || (c.keyframes ?? []).some((k) => k.opacity < 0.999);
+    // Combined matte (opacity curve x shape mask), mirroring export-engine.
+    const maskFx = (c.effects ?? []).find((fx) => fx.type === "mask");
+    const kfsSorted = [...(c.keyframes ?? [])].sort((a, b) => a.at - b.at);
+    const opExpr = kfsSorted.some((k) => k.opacity < 0.999)
+      ? piecewise(kfsSorted.map((k) => [k.at, Math.min(1, Math.max(0, k.opacity))] as [number, number]), "T")
+      : null;
+    let maskExpr: string | null = null;
+    if (maskFx && maskFx.type === "mask") {
+      const size = Math.min(1, Math.max(0.05, maskFx.size));
+      const featherPx = Math.max(1, Math.min(1, Math.max(0, maskFx.feather)) * Math.min(w, h) * 0.5);
+      const sd = maskFx.shape === "circle"
+        ? `hypot(X-W/2,H/2-Y)-${(Math.min(w, h) * size / 2).toFixed(1)}`
+        : `max(abs(X-W/2)-${(w * size / 2).toFixed(1)},abs(Y-H/2)-${(h * size / 2).toFixed(1)})`;
+      const v = `min(1,max(0,0.5-(${sd})/${featherPx.toFixed(1)}))`;
+      maskExpr = maskFx.invert ? `(1-(${v}))` : v;
+    }
+    const matte = opExpr && maskExpr ? `(${opExpr})*(${maskExpr})` : opExpr ?? maskExpr;
+    const needsAlpha = hasChroma || matte !== null;
     const baseFmt = hasChroma ? "format=rgba" : "format=yuv420p";
     const scalePad = [
       `scale=${w}:${h}:force_original_aspect_ratio=decrease`,
@@ -510,34 +538,41 @@ export function buildFfmpegCommand(p: Project, output = "nightcut-export.mp4"): 
         `[${i}:a]${[`atrim=start=${c.inSec.toFixed(3)}:end=${c.outSec.toFixed(3)}`, "asetpts=PTS-STARTPTS", `atempo=${Math.min(2, Math.max(0.5, c.speed))}`, "aresample=48000", `volume=${c.volume.toFixed(2)}`].join(",")}[ab${i}]`,
       );
     }
-    // step 2: keyframes + video effects -> [v{i}]
+    // step 2: stabilize, keyframes, matte, video effects -> [v{i}]
     let vlabel = `vb${i}`;
+    const stabFx = (c.effects ?? []).find((fx) => fx.type === "stabilize");
+    if (stabFx && stabFx.type === "stabilize") {
+      // The desktop render runs vidstabdetect first and substitutes the
+      // real transforms path (see export-engine render()).
+      chains.push(
+        `[${vlabel}]vidstabtransform=input='transforms/${c.id}.trf':smoothing=${stabFx.smoothing}:optalgo=gauss,unsharp=5:5:0.8:3:3:0.4[vst${i}]`,
+      );
+      vlabel = `vst${i}`;
+    }
     keyframeFiltersTs(c, w, h, fps).forEach((f, step) => {
       const next = `vk${i}_${step}`;
       chains.push(`[${vlabel}]${f}[${next}]`);
       vlabel = next;
     });
+    if (matte !== null) {
+      chains.push(
+        `color=c=black:s=${w}x${h}:r=${fps}:d=${dur.toFixed(3)},format=gray,geq=lum='255*(${matte})'[vam${i}]`,
+      );
+    }
+    if (matte !== null && !hasChroma) {
+      chains.push(`[${vlabel}][vam${i}]alphamerge[va${i}]`);
+      vlabel = `va${i}`;
+    }
     const vFx = (c.effects ?? []).flatMap((fx) => effectFfmpegFilters(fx, dur).video);
     if (vFx.length > 0) {
       chains.push(`[${vlabel}]${vFx.join(",")}[ve${i}]`);
       vlabel = `ve${i}`;
     }
+    if (matte !== null && hasChroma) {
+      chains.push(`[${vlabel}][vam${i}]alphamerge[va${i}]`);
+      vlabel = `va${i}`;
+    }
     if (needsAlpha) {
-      const kfs = [...(c.keyframes ?? [])].sort((a, b) => a.at - b.at);
-      if (hasChroma) {
-        const minOp = kfs.length > 0 ? Math.min(...kfs.map((k) => k.opacity)) : 1;
-        if (minOp < 0.999) {
-          chains.push(`[${vlabel}]colorchannelmixer=aa=${minOp.toFixed(3)}[va${i}]`);
-          vlabel = `va${i}`;
-        }
-      } else if (kfs.some((k) => k.opacity < 0.999)) {
-        const op = piecewise(kfs.map((k) => [k.at, Math.min(1, Math.max(0, k.opacity))] as [number, number]), "T");
-        chains.push(
-          `color=c=black:s=${w}x${h}:r=${fps}:d=${dur.toFixed(3)},format=gray,geq=lum='255*(${op})'[vam${i}]`,
-          `[${vlabel}][vam${i}]alphamerge[va${i}]`,
-        );
-        vlabel = `va${i}`;
-      }
       chains.push(
         `color=c=black:s=${w}x${h}:r=${fps}:d=${dur.toFixed(3)}[vbg${i}]`,
         `[vbg${i}][${vlabel}]overlay=0:0,format=yuv420p[v${i}]`,

@@ -20,9 +20,14 @@ import {
 export interface MediaItem {
   id: string;
   name: string;
-  url: string; // object URL for preview playback
+  url: string; // object URL (browser) or asset URL (desktop) for preview
   duration: number;
   kind: "video" | "audio";
+  /** Real filesystem path in the desktop build (native import). Needed
+   * for probing, proxies and auto-captions; absent for browser blobs. */
+  path?: string;
+  /** Captured poster frame (data URL) shown on timeline clips. */
+  thumb?: string;
 }
 
 interface Selection {
@@ -43,6 +48,9 @@ interface EditorState {
   addToTimeline: (mediaId: string) => void;
   addTextClip: (text: string, style?: { fontSize: number; color: string }) => void;
   addCaptionsFromSrt: (content: string) => number;
+  addCaptionCues: (cues: { start: number; end: number; text: string }[], offset: number) => number;
+  addAudioAtPlayhead: (mediaId: string) => void;
+  setMediaThumb: (mediaId: string, thumb: string) => void;
   applyFilterPreset: (effects: Effect[]) => void;
   applyTransition: (kind: string) => void;
   setSelectedSpeed: (speed: number) => void;
@@ -103,7 +111,9 @@ export const useEditor = create<EditorState>((set, get) => ({
     const start = track.clips.reduce((m, c) => Math.max(m, clipEnd(c)), 0);
     const clip: Clip = {
       id: newId("clip"),
-      source: item.name,
+      // Desktop clips reference the real path (export resolves it 1:1);
+      // browser clips reference the file name.
+      source: item.path ?? item.name,
       inSec: 0,
       outSec: item.duration,
       timelineStart: start,
@@ -159,6 +169,55 @@ export const useEditor = create<EditorState>((set, get) => ({
     track.clips.sort((a, b) => a.timelineStart - b.timelineStart);
     set(withHistory(s, next));
     return cues.length;
+  },
+
+  addCaptionCues: (cues, offset) => {
+    if (cues.length === 0) return 0;
+    const s = get();
+    const next = structuredClone(s.project);
+    const track = next.tracks.find((t) => t.id === "track-text")!;
+    for (const cue of cues) {
+      track.clips.push({
+        id: newId("caption"),
+        source: "",
+        inSec: 0,
+        outSec: Math.max(0.5, cue.end - cue.start),
+        timelineStart: offset + cue.start,
+        speed: 1,
+        volume: 1,
+        text: cue.text,
+        fontSize: 48,
+        textColor: "#ffffff",
+      });
+    }
+    track.clips.sort((a, b) => a.timelineStart - b.timelineStart);
+    set(withHistory(s, next));
+    return cues.length;
+  },
+
+  addAudioAtPlayhead: (mediaId) => {
+    const s = get();
+    const item = s.media.find((m) => m.id === mediaId);
+    if (!item) return;
+    const clip: Clip = {
+      id: newId("clip"),
+      source: item.path ?? item.name,
+      inSec: 0,
+      outSec: item.duration,
+      timelineStart: s.playhead,
+      speed: 1,
+      volume: 1,
+    };
+    const next = structuredClone(s.project);
+    next.tracks.find((t) => t.id === "track-audio")!.clips.push(clip);
+    set({
+      ...withHistory(s, next),
+      selected: { trackId: "track-audio", clipId: clip.id },
+    });
+  },
+
+  setMediaThumb: (mediaId, thumb) => {
+    set({ media: get().media.map((m) => (m.id === mediaId ? { ...m, thumb } : m)) });
   },
 
   applyFilterPreset: (effects) => {

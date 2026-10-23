@@ -22,6 +22,8 @@ pub enum MediaError {
     Parse(String),
     #[error("ffmpeg exited with status {0}")]
     FfmpegFailed(std::process::ExitStatus),
+    #[error("could not parse JSON output: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, MediaError>;
@@ -138,6 +140,76 @@ pub fn waveform_peaks(path: &Path, buckets: usize) -> Result<Vec<f32>> {
     Ok(compute_peaks(&samples, buckets))
 }
 
+/// One auto-caption cue from speech recognition.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CaptionCue {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
+/// Extract a 16kHz mono WAV (what whisper.cpp expects) from a media file.
+pub fn extract_audio_wav(source: &Path, out_wav: &Path) -> Result<PathBuf> {
+    let status = Command::new("ffmpeg")
+        .args(["-y", "-v", "error", "-i"])
+        .arg(source)
+        .args(["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
+        .arg(out_wav)
+        .status()?;
+    if !status.success() { return Err(MediaError::FfmpegFailed(status)); }
+    Ok(out_wav.to_path_buf())
+}
+
+/// Parse an `HH:MM:SS,mmm` whisper timestamp into seconds.
+pub fn parse_whisper_timestamp(ts: &str) -> Option<f64> {
+    let parts: Vec<&str> = ts.trim().split(':').collect();
+    if parts.len() != 3 { return None; }
+    let h: f64 = parts[0].parse().ok()?;
+    let m: f64 = parts[1].parse().ok()?;
+    let s: f64 = parts[2].replace(',', ".").parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + s)
+}
+
+/// Parse the JSON produced by `whisper-cli -oj` into caption cues.
+pub fn parse_whisper_json(json: &str) -> Result<Vec<CaptionCue>> {
+    let value: serde_json::Value = serde_json::from_str(json)?;
+    let segments = value["transcription"].as_array().cloned().unwrap_or_default();
+    let mut cues = Vec::new();
+    for seg in segments {
+        let (Some(from), Some(to)) = (
+            seg["timestamps"]["from"].as_str(),
+            seg["timestamps"]["to"].as_str(),
+        ) else { continue };
+        let text = seg["text"].as_str().unwrap_or("").trim().to_string();
+        if text.is_empty() { continue; }
+        if let (Some(start), Some(end)) =
+            (parse_whisper_timestamp(from), parse_whisper_timestamp(to))
+        {
+            cues.push(CaptionCue { start, end, text });
+        }
+    }
+    Ok(cues)
+}
+
+/// Transcribe `wav` with a whisper.cpp binary (`whisper-cli`) and model,
+/// returning caption cues. Fully local — the open-source answer to
+/// CapCut's cloud auto-captions.
+pub fn whisper_captions(whisper_bin: &Path, model: &Path, wav: &Path) -> Result<Vec<CaptionCue>> {
+    let out_base = wav.with_extension("whisper");
+    let status = Command::new(whisper_bin)
+        .args(["-m"])
+        .arg(model)
+        .args(["-f"])
+        .arg(wav)
+        .args(["-oj", "-of"])
+        .arg(&out_base)
+        .status()?;
+    if !status.success() { return Err(MediaError::FfmpegFailed(status)); }
+    let json_path = out_base.with_extension("json");
+    let json = std::fs::read_to_string(&json_path)?;
+    parse_whisper_json(&json)
+}
+
 /// Deterministic cache file name for a source file, based on its path and
 /// modification time, e.g. `a1b2c3d4.proxy.mp4`.
 pub fn cache_key(path: &Path) -> String {
@@ -157,6 +229,22 @@ pub fn cache_key(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whisper_timestamps_and_json_parse() {
+        assert_eq!(parse_whisper_timestamp("00:01:02,500"), Some(62.5));
+        assert_eq!(parse_whisper_timestamp("01:00:00.000"), Some(3600.0));
+        let json = r#"{"transcription":[
+            {"timestamps":{"from":"00:00:00,000","to":"00:00:02,760"},
+             "offsets":{"from":0,"to":2760},"text":" Ask not what your country"},
+            {"timestamps":{"from":"00:00:02,760","to":"00:00:05,000"},
+             "offsets":{"from":2760,"to":5000},"text":"  "}
+        ]}"#;
+        let cues = parse_whisper_json(json).unwrap();
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].text, "Ask not what your country");
+        assert_eq!(cues[0].end, 2.76);
+    }
 
     const PROBE_JSON: &str = r#"{
         "streams": [

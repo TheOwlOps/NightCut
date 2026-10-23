@@ -77,6 +77,14 @@ pub enum Effect {
     ChromaKey { color: String, similarity: f64, blend: f64 },
     /// Audio noise reduction (FFmpeg afftdn), strength 0..1.
     Denoise { strength: f64 },
+    /// Shape mask (CapCut Mask): `shape` is "rect" or "circle", `size`
+    /// 0..1 of the frame, `feather` 0..1 edge softness. Rendered through
+    /// the alpha matte in export-engine; the preview approximates it.
+    Mask { shape: String, size: f64, feather: f64, invert: bool },
+    /// Stabilization (CapCut Stabilize). Two-pass: export's render() runs
+    /// vidstabdetect for the clip and the graph applies vidstabtransform
+    /// with `smoothing` frames. Skipped for speed-curve/freeze clips.
+    Stabilize { smoothing: u32 },
 }
 
 /// One point of a speed curve (CapCut "Curve" speed). `at` is a fraction

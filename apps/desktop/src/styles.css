@@ -143,7 +143,10 @@ input, textarea, select {
 .clip-audio { background: var(--track-audio); }
 .clip-text { background: var(--track-text); }
 .clip.selected { outline: 2px solid var(--accent); outline-offset: -1px; }
-.clip-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; padding: 0 4px; pointer-events: none; }
+.clip-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; padding: 0 4px; pointer-events: none; position: relative; z-index: 1; }
+.clip-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0.45; pointer-events: none; }
+.clip-wave { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 12px; pointer-events: none; opacity: 0.9; }
+button.danger { background: #7f1d1d; border-color: #b91c1c; color: #fecaca; }
 .trim-handle { width: 8px; align-self: stretch; cursor: ew-resize; flex: none; }
 .trim-handle:hover { background: rgba(255,255,255,0.35); }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #ff5252; z-index: 4; pointer-events: none; }

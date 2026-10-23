@@ -7,6 +7,7 @@ description = "NightCut export engine: timeline project -> FFmpeg filter graph -
 
 [dependencies]
 editor-core = { path = "../editor-core" }
+media-engine = { path = "../media-engine" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

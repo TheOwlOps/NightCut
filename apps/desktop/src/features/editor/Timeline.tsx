@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useEditor } from "../../store/editor";
+import Waveform from "./Waveform";
 import { Clip, clipDuration, projectDuration } from "../../lib/project";
 import { formatTime } from "./Preview";
 
@@ -11,7 +12,8 @@ type DragMode =
 /**
  * Bottom timeline. Clips are metadata blocks: dragging/trimming only edits
  * numbers in the project (editor-core semantics), never the media itself.
- * Thumbnails/waveforms arrive with the media-engine cache in Phase 2.
+ * Video clips show a captured poster frame; audio/video clips show a
+ * WebAudio-decoded waveform strip.
  */
 export default function Timeline() {
   const state = useEditor();
@@ -137,7 +139,23 @@ export default function Timeline() {
                       className="trim-handle left"
                       onPointerDown={(e) => startClipDrag(e, track.id, clip, "trim", "left")}
                     />
+                    {(() => {
+                      const item = state.media.find(
+                        (m) => m.path === clip.source || m.name === clip.source,
+                      );
+                      return item?.thumb && track.kind === "video" ? (
+                        <img className="clip-thumb" src={item.thumb} alt="" draggable={false} />
+                      ) : null;
+                    })()}
                     <span className="clip-name">{clip.text ?? clip.source}</span>
+                    {(() => {
+                      const item = state.media.find(
+                        (m) => m.path === clip.source || m.name === clip.source,
+                      );
+                      return item && track.kind !== "text" ? (
+                        <Waveform url={item.url} color={track.kind === "audio" ? "#7dd87d" : "#5aa2ff"} />
+                      ) : null;
+                    })()}
                     <span
                       className="trim-handle right"
                       onPointerDown={(e) => startClipDrag(e, track.id, clip, "trim", "right")}

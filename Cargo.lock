@@ -16,6 +16,7 @@ name = "export-engine"
 version = "0.1.0"
 dependencies = [
  "editor-core",
+ "media-engine",
  "serde",
  "serde_json",
  "thiserror",

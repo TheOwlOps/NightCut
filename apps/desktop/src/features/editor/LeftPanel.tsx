@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import MediaBin from "./MediaBin";
+import MediaBin, { isTauri } from "./MediaBin";
 import { useEditor } from "../../store/editor";
 import {
   EFFECT_LABELS,
@@ -172,6 +172,60 @@ function TransitionsPanel() {
   );
 }
 
+function VoiceoverRecorder() {
+  const { addMedia, addAudioAtPlayhead } = useEditor();
+  const [recording, setRecording] = useState(false);
+  const [error, setError] = useState("");
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const countRef = useRef(0);
+
+  const toggle = async () => {
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => chunksRef.current.push(e.data);
+      rec.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
+        const url = URL.createObjectURL(blob);
+        const probe = document.createElement("audio");
+        probe.preload = "metadata";
+        countRef.current += 1;
+        const name = `Voiceover ${countRef.current}`;
+        probe.onloadedmetadata = () => {
+          const id = newId("media");
+          addMedia({ id, name, url, duration: probe.duration || 0, kind: "audio" });
+          addAudioAtPlayhead(id);
+        };
+        probe.src = url;
+      };
+      recorderRef.current = rec;
+      rec.start();
+      setRecording(true);
+      setError("");
+    } catch {
+      setError("Microphone unavailable — check the browser/OS permission.");
+    }
+  };
+
+  return (
+    <div className="field">
+      <span>Voiceover</span>
+      <button className={recording ? "danger" : "primary"} onClick={() => void toggle()}>
+        {recording ? "■ Stop recording" : "🎙 Record voiceover at playhead"}
+      </button>
+      {error && <p className="hint">{error}</p>}
+    </div>
+  );
+}
+
 function AudioPanel() {
   const { media, addMedia, addToTimeline } = useEditor();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -194,6 +248,7 @@ function AudioPanel() {
       <button className="primary" onClick={() => fileRef.current?.click()}>
         + Import music / audio
       </button>
+      <VoiceoverRecorder />
       <input ref={fileRef} type="file" accept="audio/*" multiple hidden onChange={(e) => importAudio(e.target.files)} />
       <div className="media-list">
         {audio.length === 0 && <p className="hint">Imported audio lands on the audio track. Select it there to set volume and fades.</p>}
@@ -214,10 +269,41 @@ function AudioPanel() {
 
 function CaptionsPanel() {
   const addCaptionsFromSrt = useEditor((s) => s.addCaptionsFromSrt);
+  const addCaptionCues = useEditor((s) => s.addCaptionCues);
   const addTextClip = useEditor((s) => s.addTextClip);
+  const media = useEditor((s) => s.media);
+  const project = useEditor((s) => s.project);
   const fileRef = useRef<HTMLInputElement>(null);
   const [msg, setMsg] = useState("");
   const [line, setLine] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const autoCaptions = async () => {
+    // The clip whose captions we generate: first video clip on the timeline.
+    const firstClip = project.tracks
+      .find((t) => t.kind === "video")
+      ?.clips.find((c) => c.source);
+    const item = media.find((m) => m.path && (m.path === firstClip?.source || m.name === firstClip?.source));
+    if (!item?.path) {
+      setMsg("Auto captions need a desktop-imported clip (native picker keeps its file path).");
+      return;
+    }
+    setBusy(true);
+    setMsg("Transcribing locally with whisper.cpp…");
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const cues = await invoke<{ start: number; end: number; text: string }[]>("auto_captions", {
+        path: item.path,
+        model: "tiny.en",
+      });
+      const n = addCaptionCues(cues, firstClip?.timelineStart ?? 0);
+      setMsg(n > 0 ? `Added ${n} auto-caption lines from ${item.name}.` : "Whisper found no speech in that clip.");
+    } catch (err) {
+      setMsg(`Auto captions failed: ${String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
   const importSrt = (file: File | undefined) => {
     if (!file) return;
     void file.text().then((text) => {
@@ -243,10 +329,22 @@ function CaptionsPanel() {
           Add caption
         </button>
       </div>
-      <p className="hint">
-        Automatic speech-to-text captions (whisper.cpp, fully local) arrive in Phase 3 — no cloud
-        upload like CapCut.
-      </p>
+      {isTauri() ? (
+        <>
+          <button className="primary" disabled={busy} onClick={() => void autoCaptions()}>
+            {busy ? "Transcribing…" : "✨ Auto captions (whisper.cpp, local)"}
+          </button>
+          <p className="hint">
+            Runs whisper.cpp fully on this machine — no cloud upload like CapCut. Needs the
+            whisper-cli sidecar + a model in tools/ (see tools/whisper/README.md in the repo).
+          </p>
+        </>
+      ) : (
+        <p className="hint">
+          Automatic speech-to-text captions (whisper.cpp, fully local) run in the desktop app —
+          no cloud upload like CapCut.
+        </p>
+      )}
     </div>
   );
 }

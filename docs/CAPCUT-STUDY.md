@@ -23,19 +23,24 @@ names are learned, everything is implemented from scratch on FFmpeg/Rust.
 | Effects library (adjust, blur, …) + filters | ✅ Phase 0 + Wave 2 presets |
 | Transitions between clips (fade, dissolve, wipe, slide, …) | ✅ Wave 2 — FFmpeg `xfade`/`acrossfade` |
 | Speed: Standard (constant) | ✅ Wave 2 — Inspector slider/presets |
-| Speed: Curve (ramping) | ⏳ later — needs per-segment speed model |
+| Speed: Curve (ramping) | ✅ Wave 3 — piecewise segments, 4 presets |
 | Reverse clip | ✅ Wave 2 — `reverse`/`areverse` (export-rendered) |
 | Text presets/styles, colors | ✅ Wave 2 — Text tab presets + Inspector |
 | Captions: import .SRT | ✅ Wave 2 — Captions tab, parser → text track |
-| Captions: auto (speech-to-text) | ⏳ Phase 3 — whisper.cpp local, optional download |
+| Captions: auto (speech-to-text) | ✅ Wave 4 — whisper.cpp sidecar, fully local (verified on dev VM with ggml-tiny.en + jfk.wav) |
 | Audio: volume, fades | ✅ clip volume (Wave 2) + fade effects (Phase 0) |
-| Audio: noise reduction, voice enhance | ⏳ later — `afftdn`/`arnndn` need model files |
-| Freeze frame | ⏳ later — split + hold-frame export mode |
-| Keyframe animation | ⏳ later — property keyframe model + zoompan/overlay interp |
-| Chroma key (green screen) | ⏳ later — `chromakey` needs a background layer model |
+| Audio: noise reduction | ✅ Wave 3 — `afftdn` Denoise effect |
+| Voiceover recording | ✅ Wave 4 — MediaRecorder in the Audio tab, lands at playhead |
+| Freeze frame | ✅ Wave 3 — Freeze button, `tpad` hold + shift later clips |
+| Keyframe animation | ✅ Wave 3 — scale/rotate/opacity via zoompan/rotate/matte expressions + CSS preview |
+| Chroma key (green screen) | ✅ Wave 3 — `chromakey` + alpha composite over black |
+| Mask (rect/circle) | ✅ Wave 4 — shape/feather/invert baked into the alpha matte |
+| Stabilization | ✅ Wave 4 — two-pass vidstab (detect in render(), transform in graph), live-verified |
+| Motion tracking | ⏳ later |
 | Background removal (AI) | ⏳ later — local segmentation model, optional download |
-| Mask, motion tracking, stabilization | ⏳ later — `vidstab` is a 2-pass flow |
-| Templates / stock / music library (cloud) | ❌ not copied — licensed cloud content (see BLUEPRINT §8) |
+| Timeline thumbnails + waveforms | ✅ Wave 4 — poster capture at import + WebAudio peaks on clips |
+| Templates (local recipes) | ✅ Wave 3 — TikTok Hook / Channel Intro / Tutorial Step |
+| Stock / music library (cloud) | ❌ not copied — licensed cloud content (see BLUEPRINT §8) |
 | Text-to-speech, AI avatar, relight (cloud AI) | ❌ not copied — server AI (see BLUEPRINT §8) |
 
 ## Sources

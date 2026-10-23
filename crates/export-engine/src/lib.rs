@@ -127,6 +127,56 @@ pub fn effect_video_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
             blend.clamp(0.0, 1.0)
         )],
         Effect::Denoise { .. } => Vec::new(), // audio-only effect
+        Effect::Mask { .. } => Vec::new(),    // rendered via the alpha matte
+        Effect::Stabilize { .. } => Vec::new(), // needs the detect-pass transforms (render())
+    }
+}
+
+/// The clip's shape mask, if it has a Mask effect.
+pub fn clip_mask(clip: &editor_core::Clip) -> Option<(String, f64, f64, bool)> {
+    clip.effects.iter().find_map(|fx| match fx {
+        Effect::Mask { shape, size, feather, invert } => {
+            Some((shape.clone(), *size, *feather, *invert))
+        }
+        _ => None,
+    })
+}
+
+/// Whether the clip asks for stabilization.
+pub fn clip_stabilize_smoothing(clip: &editor_core::Clip) -> Option<u32> {
+    clip.effects.iter().find_map(|fx| match fx {
+        Effect::Stabilize { smoothing } => Some(*smoothing),
+        _ => None,
+    })
+}
+
+/// Per-pixel matte value (0..1) expression over geq's X, Y, W, H, T,
+/// combining keyframed opacity (over T) and the shape mask (over X, Y).
+/// `None` means fully opaque everywhere. Rendered as a gray stream and
+/// alphamerged onto the clip — one matte handles both, exactly.
+pub fn matte_value_expr(clip: &editor_core::Clip, w: u32, h: u32) -> Option<String> {
+    let opacity = keyframe_opacity_expr(clip);
+    let mask = clip_mask(clip).map(|(shape, size, feather, invert)| {
+        let size = size.clamp(0.05, 1.0);
+        let feather_px = (feather.clamp(0.0, 1.0) * (w.min(h) as f64) * 0.5).max(1.0);
+        // Signed distance outside the shape (positive = outside).
+        let sd = if shape == "circle" {
+            format!("hypot(X-W/2,H/2-Y)-{:.1}", (w.min(h) as f64) * size / 2.0)
+        } else {
+            format!(
+                "max(abs(X-W/2)-{:.1},abs(Y-H/2)-{:.1})",
+                (w as f64) * size / 2.0,
+                (h as f64) * size / 2.0
+            )
+        };
+        let v = format!("min(1,max(0,0.5-({sd})/{feather_px:.1}))");
+        if invert { format!("(1-({v}))") } else { v }
+    });
+    match (opacity, mask) {
+        (None, None) => None,
+        (Some(op), None) => Some(op),
+        (None, Some(m)) => Some(m),
+        (Some(op), Some(m)) => Some(format!("({op})*({m})")),
     }
 }
 
@@ -166,7 +216,6 @@ pub fn keyframe_filters(clip: &editor_core::Clip, w: u32, h: u32, fps: u32) -> V
     if clip.keyframes.is_empty() { return Vec::new(); }
     let mut kfs = clip.keyframes.clone();
     kfs.sort_by(|a, b| a.at.total_cmp(&b.at));
-    let dur = clip.duration();
     let mut out = Vec::new();
 
     let scale_varies = kfs.iter().any(|k| (k.scale - kfs[0].scale).abs() > 0.001)
@@ -244,6 +293,20 @@ pub fn build_ffmpeg_args(
     output: &Path,
     settings: &ExportSettings,
 ) -> Result<Vec<String>> {
+    build_ffmpeg_args_stabilized(project, sources, output, settings, &BTreeMap::new())
+}
+
+/// Like `build_ffmpeg_args`, plus vidstab transform files (clip id ->
+/// .trf path) produced by the detect pass in `render()`. Clips whose id
+/// is present get a `vidstabtransform` filter; a Stabilize effect
+/// without a transforms entry renders unstabilized.
+pub fn build_ffmpeg_args_stabilized(
+    project: &Project,
+    sources: &BTreeMap<String, PathBuf>,
+    output: &Path,
+    settings: &ExportSettings,
+    stabilize_transforms: &BTreeMap<String, PathBuf>,
+) -> Result<Vec<String>> {
     let video_track = project.tracks.iter().find(|t| t.kind == TrackKind::Video);
     let mut video_clips: Vec<_> = video_track
         .map(|t| t.clips.iter().filter(|c| !c.source.is_empty()).collect())
@@ -282,8 +345,6 @@ pub fn build_ffmpeg_args(
     for (i, clip) in video_clips.iter().enumerate() {
         let dur = clip.duration();
         let has_chroma = clip.effects.iter().any(|fx| matches!(fx, Effect::ChromaKey { .. }));
-        let needs_alpha = has_chroma
-            || clip.keyframes.iter().any(|k| k.opacity < 0.999);
         // Only the chroma path needs an RGBA base (its alpha is produced by
         // the chromakey filter later). Keyframed opacity works on YUV via
         // alphamerge below.
@@ -351,7 +412,7 @@ pub fn build_ffmpeg_args(
             ];
             vchain.extend(scale_pad.iter().cloned());
             filters.push(format!("[{i}:v]{}[vb{i}]", vchain.join(",")));
-            let mut achain = vec![
+            let achain = vec![
                 format!("atrim=start={:.3}:end={:.3}", clip.in_sec, clip.out_sec),
                 "asetpts=PTS-STARTPTS".to_string(),
                 format!("atempo={:.3}", clip.speed.clamp(0.5, 2.0)),
@@ -361,11 +422,38 @@ pub fn build_ffmpeg_args(
             filters.push(format!("[{i}:a]{}[ab{i}]", achain.join(",")));
         }
 
-        // ---- step 2: keyframes + video effects
+        // ---- step 2: stabilization, keyframes, matte, video effects
+        let matte = matte_value_expr(clip, w, h);
+        let needs_alpha = has_chroma || matte.is_some();
         let mut vlabel = format!("vb{i}");
+        // Stabilization first (it warps the raw frames; later transforms
+        // then operate on stable footage, as in CapCut).
+        if let (Some(smoothing), Some(trf)) = (
+            clip_stabilize_smoothing(clip),
+            stabilize_transforms.get(&clip.id),
+        ) {
+            let next = format!("vst{i}");
+            filters.push(format!(
+                "[{vlabel}]vidstabtransform=input='{}':smoothing={smoothing}:optalgo=gauss,unsharp=5:5:0.8:3:3:0.4[{next}]",
+                trf.display()
+            ));
+            vlabel = next;
+        }
         for (step, filter) in keyframe_filters(clip, w, h, fps).into_iter().enumerate() {
             let next = format!("vk{i}_{step}");
             filters.push(format!("[{vlabel}]{filter}[{next}]"));
+            vlabel = next;
+        }
+        // The matte is a gray stream whose brightness is the combined
+        // opacity-curve × shape-mask value per pixel per frame.
+        if let Some(matte_expr) = &matte {
+            filters.push(format!(
+                "color=c=black:s={w}x{h}:r={fps}:d={dur:.3},format=gray,geq=lum='255*({matte_expr})'[vam{i}]"
+            ));
+        }
+        if matte.is_some() && !has_chroma {
+            let next = format!("va{i}");
+            filters.push(format!("[{vlabel}][vam{i}]alphamerge[{next}]"));
             vlabel = next;
         }
         let vfx: Vec<String> = clip.effects.iter().flat_map(|fx| effect_video_filters(fx, dur)).collect();
@@ -374,32 +462,16 @@ pub fn build_ffmpeg_args(
             filters.push(format!("[{vlabel}]{}[{next}]", vfx.join(",")));
             vlabel = next;
         }
+        if matte.is_some() && has_chroma {
+            // Chroma produced its own alpha in the effects step; merge the
+            // matte on top (alphamerge multiplies the existing alpha).
+            let next = format!("va{i}");
+            filters.push(format!("[{vlabel}][vam{i}]alphamerge[{next}]"));
+            vlabel = next;
+        }
         if needs_alpha {
             // Composite over a black canvas of the same duration so the
-            // alpha (chroma key / keyframed opacity) becomes visible.
-            if has_chroma {
-                // Chroma alpha already exists; a keyframed opacity on top is
-                // approximated by its minimum value as a constant alpha scale.
-                if let Some(min_op) = clip.keyframes.iter()
-                    .map(|k| k.opacity)
-                    .fold(None::<f64>, |m, o| Some(m.map_or(o, |x: f64| x.min(o))))
-                    .filter(|o| *o < 0.999)
-                {
-                    let next = format!("va{i}");
-                    filters.push(format!("[{vlabel}]colorchannelmixer=aa={min_op:.3}[{next}]"));
-                    vlabel = next;
-                }
-            } else if let Some(op) = keyframe_opacity_expr(clip) {
-                // Build an alpha matte: a gray stream whose brightness is
-                // the opacity curve over time (geq on gray is well-defined),
-                // then alphamerge it onto the clip.
-                filters.push(format!(
-                    "color=c=black:s={w}x{h}:r={fps}:d={dur:.3},format=gray,geq=lum='255*({op})'[vam{i}]"
-                ));
-                let next = format!("va{i}");
-                filters.push(format!("[{vlabel}][vam{i}]alphamerge[{next}]"));
-                vlabel = next;
-            }
+            // alpha (chroma key / matte) becomes visible.
             filters.push(format!("color=c=black:s={w}x{h}:r={fps}:d={dur:.3}[vbg{i}]"));
             filters.push(format!("[vbg{i}][{vlabel}]overlay=0:0,format=yuv420p[v{i}]"));
         } else {
@@ -511,14 +583,71 @@ pub fn build_ffmpeg_args(
     Ok(args)
 }
 
-/// Render a project to `output` with FFmpeg.
+/// Run the vidstab *detect* pass for every clip that asks for
+/// stabilization (constant-speed, non-freeze clips only — the transform
+/// must see the same frames the main graph will). Transform files are
+/// cached under the system temp dir, keyed by source + trim window.
+/// Returns clip id -> transforms file for the clips that got one.
+pub fn run_stabilize_detect_passes(
+    project: &Project,
+    sources: &BTreeMap<String, PathBuf>,
+) -> BTreeMap<String, PathBuf> {
+    let mut out = BTreeMap::new();
+    let Some(track) = project.tracks.iter().find(|t| t.kind == editor_core::TrackKind::Video) else {
+        return out;
+    };
+    let dir = std::env::temp_dir().join("nightcut-stabilize");
+    if std::fs::create_dir_all(&dir).is_err() { return out; }
+    for clip in &track.clips {
+        if clip_stabilize_smoothing(clip).is_none()
+            || clip.speed_curve.is_some()
+            || clip.freeze_duration.is_some()
+            || clip.source.is_empty()
+        {
+            continue;
+        }
+        let Some(path) = sources.get(&clip.id) else { continue };
+        let key = format!(
+            "{}-{}-{}",
+            media_engine::cache_key(path),
+            (clip.in_sec * 1000.0) as i64,
+            (clip.out_sec * 1000.0) as i64
+        );
+        let trf = dir.join(format!("{key}.trf"));
+        if !trf.exists() {
+            // Detect on the same normalized stream the main graph builds:
+            // trim -> speed -> scale/pad to canvas.
+            let vf = format!(
+                "trim=start={:.3}:end={:.3},setpts=(PTS-STARTPTS)/{:.3},scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,fps={},vidstabdetect=shakiness=5:accuracy=15:result='{}'",
+                clip.in_sec, clip.out_sec, clip.speed.max(0.01),
+                project.canvas.width, project.canvas.height,
+                project.canvas.width, project.canvas.height,
+                project.canvas.fps, trf.display()
+            );
+            let status = Command::new("ffmpeg")
+                .args(["-y", "-v", "error", "-i"])
+                .arg(path)
+                .args(["-vf", &vf, "-f", "null", "-"])
+                .status();
+            if !matches!(status, Ok(s) if s.success()) { continue; }
+        }
+        if trf.exists() {
+            out.insert(clip.id.clone(), trf);
+        }
+    }
+    out
+}
+
+/// Render a project to `output` with FFmpeg. Runs the stabilization
+/// detect pass first when any clip requests it.
 pub fn render(
     project: &Project,
     sources: &BTreeMap<String, PathBuf>,
     output: &Path,
     settings: &ExportSettings,
 ) -> Result<PathBuf> {
-    let args = build_ffmpeg_args(project, sources, output, settings)?;
+    let transforms = run_stabilize_detect_passes(project, sources);
+    let args = build_ffmpeg_args_stabilized(project, sources, output, settings, &transforms)?;
     let status = Command::new("ffmpeg").args(&args).status()?;
     if !status.success() { return Err(ExportError::FfmpegFailed(status)); }
     Ok(output.to_path_buf())
@@ -679,6 +808,27 @@ mod tests {
     }
 
     #[test]
+    fn mask_and_stabilize_graph_bits() {
+        let mut p = Project::default();
+        let mut c = Clip::new("c1", "a.mp4", 0.0, 4.0, 0.0);
+        c.effects = vec![
+            editor_core::Effect::Mask { shape: "circle".into(), size: 0.6, feather: 0.2, invert: false },
+            editor_core::Effect::Stabilize { smoothing: 12 },
+        ];
+        p.add_clip("track-video", c).unwrap();
+        let sources = BTreeMap::from([("c1".to_string(), PathBuf::from("/media/a.mp4"))]);
+        let transforms = BTreeMap::from([("c1".to_string(), PathBuf::from("/tmp/x.trf"))]);
+        let args = build_ffmpeg_args_stabilized(&p, &sources, Path::new("o.mp4"), &ExportSettings::default(), &transforms).unwrap();
+        let j = args.join(" ");
+        assert!(j.contains("vidstabtransform=input='/tmp/x.trf':smoothing=12"), "{j}");
+        assert!(j.contains("geq=lum='255*(min(1,max(0,0.5-(hypot"), "{j}");
+        assert!(j.contains("alphamerge"), "{j}");
+        // Without a transforms entry the same project renders unstabilized.
+        let args2 = build_ffmpeg_args(&p, &sources, Path::new("o.mp4"), &ExportSettings::default()).unwrap();
+        assert!(!args2.join(" ").contains("vidstabtransform"));
+    }
+
+    #[test]
     fn chroma_and_denoise_filters() {
         let v = effect_video_filters(
             &editor_core::Effect::ChromaKey { color: "#00ff00".into(), similarity: 0.3, blend: 0.1 },
@@ -799,6 +949,41 @@ mod tests {
         let out = dir.join("out-wave3.mp4");
         render(&p, &sources, &out, &ExportSettings::default()).unwrap();
         assert!(out.metadata().unwrap().len() > 10_000);
+    }
+
+    /// Live end-to-end: mask matte render + real two-pass stabilization of
+    /// a synthetically shaky clip (moving crop window).
+    #[test]
+    #[ignore]
+    fn renders_mask_and_stabilized() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shaky = dir.join("shaky.mp4");
+        if !shaky.exists() {
+            let status = Command::new("ffmpeg")
+                .args(["-y", "-v", "error", "-f", "lavfi",
+                       "-i", "testsrc=duration=2:size=400x300:rate=30",
+                       "-f", "lavfi", "-i", "sine=frequency=330:duration=2",
+                       "-vf", "crop=320:240:x='40+25*sin(2*PI*t/0.7)':y='30+18*cos(2*PI*t/0.9)'",
+                       "-c:v", "libx264", "-c:a", "aac", "-shortest"])
+                .arg(&shaky).status().unwrap();
+            assert!(status.success());
+        }
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        let mut c1 = Clip::new("c1", "shaky.mp4", 0.0, 2.0, 0.0);
+        c1.effects = vec![
+            editor_core::Effect::Mask { shape: "circle".into(), size: 0.7, feather: 0.25, invert: false },
+            editor_core::Effect::Stabilize { smoothing: 10 },
+        ];
+        p.add_clip("track-video", c1).unwrap();
+        let sources = BTreeMap::from([("c1".to_string(), shaky)]);
+        let out = dir.join("out-mask-stab.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).unwrap();
+        assert!(out.metadata().unwrap().len() > 10_000);
+        // The detect pass must have produced a transforms file.
+        let transforms = run_stabilize_detect_passes(&p, &sources);
+        assert!(transforms.contains_key("c1"));
     }
 
     /// Live end-to-end render of two clips joined by an xfade transition.
