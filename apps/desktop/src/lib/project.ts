@@ -392,6 +392,10 @@ export interface Clip {
   overlayScale?: number;
   overlayX?: number;
   overlayY?: number;
+  /** Text vertical position: fraction of the free space (0=top, 1=bottom). */
+  textY?: number;
+  /** Overlay blend mode ("screen", "multiply", ...); unset = normal. */
+  blendMode?: string;
 }
 
 export interface Track {
@@ -509,6 +513,8 @@ export function toRustJson(p: Project): string {
           ...(c.overlayScale !== undefined ? { overlayScale: c.overlayScale } : {}),
           ...(c.overlayX !== undefined ? { overlayX: c.overlayX } : {}),
           ...(c.overlayY !== undefined ? { overlayY: c.overlayY } : {}),
+          ...(c.textY !== undefined ? { textY: c.textY } : {}),
+          ...(c.blendMode ? { blendMode: c.blendMode } : {}),
         })),
       })),
       ...((p.markers?.length ?? 0) > 0 ? { markers: p.markers } : {}),

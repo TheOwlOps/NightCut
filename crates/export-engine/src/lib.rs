@@ -326,6 +326,23 @@ pub fn effect_audio_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
 }
 
 /// Escape a string for use inside an FFmpeg drawtext `text='...'`.
+/// The clip's blend mode if it names a real ffmpeg blend mode other
+/// than normal compositing.
+pub fn blend_mode_of(clip: &editor_core::Clip) -> Option<&'static str> {
+    match clip.blend_mode.as_deref() {
+        Some("screen") => Some("screen"),
+        Some("multiply") => Some("multiply"),
+        Some("overlay") => Some("overlay"),
+        Some("softlight") => Some("softlight"),
+        Some("hardlight") => Some("hardlight"),
+        Some("darken") => Some("darken"),
+        Some("lighten") => Some("lighten"),
+        Some("difference") => Some("difference"),
+        Some("addition") => Some("addition"),
+        _ => None,
+    }
+}
+
 /// Still-image sources that must be looped when used as overlay inputs.
 pub fn is_still_image(path: &Path) -> bool {
     matches!(
@@ -364,6 +381,22 @@ pub fn build_ffmpeg_args_stabilized(
     output: &Path,
     settings: &ExportSettings,
     stabilize_transforms: &BTreeMap<String, PathBuf>,
+) -> Result<Vec<String>> {
+    build_ffmpeg_args_full(project, sources, output, settings, stabilize_transforms, &BTreeMap::new())
+}
+
+/// Full builder: `overlay_dims` carries probed source dimensions
+/// (clip id -> (width, height)) for overlay clips with a blend mode —
+/// the blend path crops the base to the overlay's exact rect, which
+/// needs the scaled height. Without dims it assumes the canvas aspect.
+#[allow(clippy::too_many_arguments)]
+pub fn build_ffmpeg_args_full(
+    project: &Project,
+    sources: &BTreeMap<String, PathBuf>,
+    output: &Path,
+    settings: &ExportSettings,
+    stabilize_transforms: &BTreeMap<String, PathBuf>,
+    overlay_dims: &BTreeMap<String, (u32, u32)>,
 ) -> Result<Vec<String>> {
     let video_track = project.tracks.iter().find(|t| t.kind == TrackKind::Video);
     let mut video_clips: Vec<_> = video_track
@@ -651,13 +684,22 @@ pub fn build_ffmpeg_args_stabilized(
         let cx = clip.overlay_x.unwrap_or(0.8).clamp(0.0, 1.0);
         let cy = clip.overlay_y.unwrap_or(0.8).clamp(0.0, 1.0);
         let pw = ((w as f64 * scale_f).round() as u32).max(2);
+        let blend = blend_mode_of(clip);
+        // Scaled height: from the probed source aspect when blending
+        // (the blend path needs the exact rect), else -2 (keep aspect).
+        let ph = overlay_dims.get(&clip.id).map(|(sw, sh)| {
+            (((pw as f64 * *sh as f64 / *sw as f64) / 2.0).round() as u32 * 2).max(2)
+        });
         let vfx: Vec<String> = clip.effects.iter()
             .flat_map(|fx| effect_video_filters(fx, dur))
             .collect();
         let mut chain = vec![
             format!("trim=start={:.3}:end={:.3}", clip.in_sec, clip.out_sec),
             format!("setpts=(PTS-STARTPTS)/{:.3}", clip.speed.max(0.01)),
-            format!("scale={pw}:-2"),
+            match (blend, ph) {
+                (Some(_), Some(ph)) => format!("scale={pw}:{ph}"),
+                _ => format!("scale={pw}:-2"),
+            },
             format!("fps={fps}"),
             "setsar=1".to_string(),
             "format=yuva420p".to_string(),
@@ -668,11 +710,31 @@ pub fn build_ffmpeg_args_stabilized(
         chain.push(format!("setpts=PTS+{:.3}/TB", clip.timeline_start));
         filters.push(format!("[{idx}:v]{}[ov{k}]", chain.join(",")));
         let next = format!("vov{k}");
-        filters.push(format!(
-            "[{current}][ov{k}]overlay=x='(W-w)*{cx:.3}':y='(H-h)*{cy:.3}':enable='between(t,{:.3},{:.3})'[{next}]",
-            clip.timeline_start,
-            clip.timeline_end(),
-        ));
+        if let (Some(mode), Some(ph)) = (blend, ph) {
+            // Blend path: crop the base to the overlay's exact rect,
+            // blend the two, and lay the result back with the plain
+            // overlay filter inside the clip's window. (The overlay's
+            // own alpha is flattened on this path.)
+            let px = (((w - pw) as f64 * cx).round() as u32).min(w - pw);
+            let py = (((h - ph) as f64 * cy).round() as u32).min(h - ph);
+            // Blend in planar RGB (gbrp): YUV planes garble hues, and
+            // packed rgb24 is misread by the blend filter entirely.
+            filters.push(format!("[ov{k}]format=gbrp[ovf{k}]"));
+            filters.push(format!("[{current}]split=2[baseM{k}][baseC{k}]"));
+            filters.push(format!("[baseC{k}]crop={pw}:{ph}:{px}:{py},format=gbrp[crop{k}]"));
+            filters.push(format!("[crop{k}][ovf{k}]blend=all_mode={mode},format=yuv420p[bl{k}]"));
+            filters.push(format!(
+                "[baseM{k}][bl{k}]overlay={px}:{py}:enable='between(t,{:.3},{:.3})'[{next}]",
+                clip.timeline_start,
+                clip.timeline_end(),
+            ));
+        } else {
+            filters.push(format!(
+                "[{current}][ov{k}]overlay=x='(W-w)*{cx:.3}':y='(H-h)*{cy:.3}':enable='between(t,{:.3},{:.3})'[{next}]",
+                clip.timeline_start,
+                clip.timeline_end(),
+            ));
+        }
         current = next;
     }
 
@@ -711,13 +773,21 @@ pub fn build_ffmpeg_args_stabilized(
                 if clip.text_shadow {
                     extra.push_str(":shadowcolor=black@0.6:shadowx=3:shadowy=3");
                 }
+                // Per-clip vertical position: (h-text_h)*f puts the top
+                // edge at fraction f of the free space (0=top, 1=bottom);
+                // unset keeps the legacy caption spot.
+                let y_expr = match clip.text_y {
+                    Some(f) => format!("(h-text_h)*{:.3}", f.clamp(0.0, 1.0)),
+                    None => "h-220".to_string(),
+                };
                 filters.push(format!(
-                    "[{current}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor={}:borderw=3:bordercolor=black{}:x=(w-text_w)/2:y=h-220:enable='between(t,{:.3},{:.3})'[{next}]",
+                    "[{current}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor={}:borderw=3:bordercolor=black{}:x=(w-text_w)/2:y={}:enable='between(t,{:.3},{:.3})'[{next}]",
                     font.display(),
                     escape_drawtext(text),
                     clip.font_size.unwrap_or(64),
                     color,
                     extra,
+                    y_expr,
                     clip.timeline_start,
                     clip.timeline_end(),
                 ));
@@ -901,7 +971,23 @@ pub fn render(
     settings: &ExportSettings,
 ) -> Result<PathBuf> {
     let transforms = run_stabilize_detect_passes(project, sources);
-    let args = build_ffmpeg_args_stabilized(project, sources, output, settings, &transforms)?;
+    // Probe dimensions for overlay clips with a blend mode (the blend
+    // path needs the overlay's exact scaled height).
+    let mut overlay_dims: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    for track in project.tracks.iter().filter(|t| t.kind == TrackKind::Video).skip(1) {
+        for clip in &track.clips {
+            if blend_mode_of(clip).is_some() {
+                if let Some(path) = sources.get(&clip.id) {
+                    if let Ok(info) = media_engine::probe(path) {
+                        if info.width > 0 && info.height > 0 {
+                            overlay_dims.insert(clip.id.clone(), (info.width, info.height));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let args = build_ffmpeg_args_full(project, sources, output, settings, &transforms, &overlay_dims)?;
     let status = Command::new("ffmpeg").args(&args).status()?;
     if !status.success() { return Err(ExportError::FfmpegFailed(status)); }
     Ok(output.to_path_buf())
@@ -1186,11 +1272,11 @@ mod tests {
             p
         };
         let base = mk("base-red.mp4", "red");
-        let over = mk("over-green.mp4", "green");
+        let over = mk("over-lime.mp4", "lime");
         let mut p = Project::default();
         p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
         p.tracks[0].clips = vec![Clip::new("c1", "base-red.mp4", 0.0, 2.0, 0.0)];
-        let mut oc = Clip::new("ov1", "over-green.mp4", 0.0, 2.0, 0.0);
+        let mut oc = Clip::new("ov1", "over-lime.mp4", 0.0, 2.0, 0.0);
         oc.overlay_scale = Some(0.5);
         oc.overlay_x = Some(1.0);
         oc.overlay_y = Some(1.0);
@@ -1294,6 +1380,157 @@ mod tests {
         assert!(r1 > 120 && g1 < 110, "base area should be red, got r={r1} g={g1}");
         let (r2, g2, b2) = px(290, 215);
         assert!(r2 > 180 && g2 > 180 && b2 > 180, "logo area should be white, got {r2},{g2},{b2}");
+    }
+
+    #[test]
+    fn blend_mode_uses_crop_blend_path() {
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        p.tracks[0].clips = vec![Clip::new("c1", "base.mp4", 0.0, 2.0, 0.0)];
+        let mut oc = Clip::new("ov1", "over.mp4", 0.0, 2.0, 0.0);
+        oc.overlay_scale = Some(0.5);
+        oc.overlay_x = Some(1.0);
+        oc.overlay_y = Some(1.0);
+        oc.blend_mode = Some("screen".to_string());
+        p.tracks.insert(1, {
+            let mut t = editor_core::Track::new("track-overlay", TrackKind::Video);
+            t.clips = vec![oc];
+            t
+        });
+        let sources: BTreeMap<String, PathBuf> = [
+            ("c1".to_string(), PathBuf::from("/media/base.mp4")),
+            ("ov1".to_string(), PathBuf::from("/media/over.mp4")),
+        ].into_iter().collect();
+        let dims: BTreeMap<String, (u32, u32)> =
+            [("ov1".to_string(), (320u32, 240u32))].into_iter().collect();
+        let args = build_ffmpeg_args_full(&p, &sources, Path::new("/tmp/o.mp4"),
+            &ExportSettings::default(), &BTreeMap::new(), &dims).unwrap();
+        let j = args.join(" ");
+        // pw=160, ph=120, bottom-right => px=160, py=120.
+        assert!(j.contains("crop=160:120:160:120"), "{j}");
+        assert!(j.contains("blend=all_mode=screen"), "{j}");
+        // Unknown modes fall back to plain compositing.
+        let mut p2 = p.clone();
+        p2.tracks[1].clips[0].blend_mode = Some("bogus".to_string());
+        let args2 = build_ffmpeg_args_full(&p2, &sources, Path::new("/tmp/o.mp4"),
+            &ExportSettings::default(), &BTreeMap::new(), &dims).unwrap();
+        assert!(!args2.join(" ").contains("blend=all_mode"), "{}", args2.join(" "));
+    }
+
+    #[test]
+    fn text_y_changes_drawtext_position() {
+        let (mut p, sources) = two_clip_project();
+        let args = build_ffmpeg_args(&p, &sources, Path::new("/tmp/o.mp4"), &ExportSettings::default()).unwrap();
+        assert!(args.join(" ").contains("y=h-220"), "{}", args.join(" "));
+        p.tracks.iter_mut().find(|t| t.kind == TrackKind::Text).unwrap().clips[0].text_y = Some(0.0);
+        let args = build_ffmpeg_args(&p, &sources, Path::new("/tmp/o.mp4"), &ExportSettings::default()).unwrap();
+        assert!(args.join(" ").contains("y=(h-text_h)*0.000"), "{}", args.join(" "));
+    }
+
+    /// Live render: green overlay in screen mode over a red base makes
+    /// yellow in the rect, red outside it.
+    #[test]
+    #[ignore]
+    fn renders_blend_mode_screen() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mk = |name: &str, color: &str| {
+            let p = dir.join(name);
+            if !p.exists() {
+                let status = Command::new("ffmpeg")
+                    .args(["-y", "-v", "error", "-f", "lavfi", "-i",
+                           &format!("color=c={color}:duration=2:size=320x240:rate=30"),
+                           "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                           "-c:v", "libx264", "-c:a", "aac", "-shortest"])
+                    .arg(&p).status().unwrap();
+                assert!(status.success());
+            }
+            p
+        };
+        let base = mk("base-red.mp4", "red");
+        let over = mk("over-lime.mp4", "lime");
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        p.tracks[0].clips = vec![Clip::new("c1", "base-red.mp4", 0.0, 2.0, 0.0)];
+        let mut oc = Clip::new("ov1", "over-lime.mp4", 0.0, 2.0, 0.0);
+        oc.overlay_scale = Some(0.5);
+        oc.overlay_x = Some(1.0);
+        oc.overlay_y = Some(1.0);
+        oc.blend_mode = Some("screen".to_string());
+        p.tracks.insert(1, {
+            let mut t = editor_core::Track::new("track-overlay", TrackKind::Video);
+            t.clips = vec![oc];
+            t
+        });
+        let sources: BTreeMap<String, PathBuf> =
+            [("c1".to_string(), base), ("ov1".to_string(), over)].into_iter().collect();
+        let out = dir.join("blend-screen.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).expect("blend render");
+        let raw = Command::new("ffmpeg")
+            .args(["-v", "error", "-ss", "1", "-i"])
+            .arg(&out)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output().unwrap();
+        assert!(raw.status.success());
+        let px = |x: usize, y: usize| {
+            let i = (y * 320 + x) * 3;
+            (raw.stdout[i], raw.stdout[i + 1], raw.stdout[i + 2])
+        };
+        let (r1, g1, _) = px(40, 40);
+        assert!(r1 > 120 && g1 < 110, "outside rect should stay red, got r={r1} g={g1}");
+        let (r2, g2, b2) = px(280, 200);
+        assert!(r2 > 180 && g2 > 180 && b2 < 120, "screen(red,green) should be yellow, got {r2},{g2},{b2}");
+    }
+
+    /// Live render: two text clips at different heights no longer stack.
+    #[test]
+    #[ignore]
+    fn renders_text_at_different_heights() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("base-red.mp4");
+        if !base.exists() {
+            let status = Command::new("ffmpeg")
+                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=red:duration=2:size=320x240:rate=30",
+                       "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                       "-c:v", "libx264", "-c:a", "aac", "-shortest"])
+                .arg(&base).status().unwrap();
+            assert!(status.success());
+        }
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        p.tracks[0].clips = vec![Clip::new("c1", "base-red.mp4", 0.0, 2.0, 0.0)];
+        let mut t1 = Clip::text_clip("t1", "TOP", 0.0, 2.0);
+        t1.text_y = Some(0.0);
+        let mut t2 = Clip::text_clip("t2", "BOTTOM", 0.0, 2.0);
+        t2.text_y = Some(1.0);
+        p.tracks.iter_mut().find(|t| t.kind == TrackKind::Text).unwrap().clips = vec![t1, t2];
+        let sources: BTreeMap<String, PathBuf> = [("c1".to_string(), base)].into_iter().collect();
+        let out = dir.join("text-heights.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).expect("text heights render");
+        let raw = Command::new("ffmpeg")
+            .args(["-v", "error", "-ss", "1", "-i"])
+            .arg(&out)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output().unwrap();
+        assert!(raw.status.success());
+        // Count near-white pixels in the top and bottom thirds.
+        let count_white = |y0: usize, y1: usize| {
+            let mut n = 0;
+            for y in y0..y1 {
+                for x in 0..320 {
+                    let i = (y * 320 + x) * 3;
+                    if raw.stdout[i] > 200 && raw.stdout[i + 1] > 200 && raw.stdout[i + 2] > 200 { n += 1; }
+                }
+            }
+            n
+        };
+        let top = count_white(0, 80);
+        let mid = count_white(95, 145);
+        let bot = count_white(160, 240);
+        assert!(top > 100, "TOP text should render in the top third, white px={top}");
+        assert!(bot > 100, "BOTTOM text should render in the bottom third, white px={bot}");
+        assert!(mid < top && mid < bot, "middle should be emptier than both, mid={mid} top={top} bot={bot}");
     }
 
     #[test]

@@ -110,6 +110,9 @@ export default function Preview() {
             borderRadius: 6,
             boxShadow: "0 4px 18px rgba(0,0,0,0.5)",
             pointerEvents: "none" as const,
+            ...(activeOverlay.blendMode
+              ? { mixBlendMode: activeOverlay.blendMode as React.CSSProperties["mixBlendMode"] }
+              : {}),
           };
           return overlayMedia.kind === "image" ? (
             <img src={overlayMedia.url} alt="" style={overlayStyle} />
@@ -131,14 +134,45 @@ export default function Preview() {
           );
         })()}
         {activeText && activeText.length > 0 && (
-          <div className="preview-text-stack">
-            {activeText.map((c) => (
+          <>
+            {activeText.filter((c) => c.textY === undefined).length > 0 && (
+              <div className="preview-text-stack">
+                {activeText.filter((c) => c.textY === undefined).map((c) => (
+                  <div
+                    key={c.id}
+                    className="preview-text"
+                    style={{
+                      fontSize: (c.fontSize ?? 64) / 16,
+                      color: c.textColor ?? "#ffffff",
+                      ...(c.textBg
+                        ? {
+                            background: `${c.textBg}cc`,
+                            padding: "0.1em 0.45em",
+                            borderRadius: "0.35em",
+                          }
+                        : {}),
+                      ...(c.textShadow ? { textShadow: "0.08em 0.08em 0.15em rgba(0,0,0,0.85)" } : {}),
+                    }}
+                  >
+                    {c.text}
+                  </div>
+                ))}
+              </div>
+            )}
+            {activeText.filter((c) => c.textY !== undefined).map((c) => (
               <div
                 key={c.id}
                 className="preview-text"
                 style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  textAlign: "center",
+                  top: `${(c.textY ?? 0) * 100}%`,
+                  transform: `translateY(-${(c.textY ?? 0) * 100}%)`,
                   fontSize: (c.fontSize ?? 64) / 16,
                   color: c.textColor ?? "#ffffff",
+                  pointerEvents: "none",
                   ...(c.textBg
                     ? {
                         background: `${c.textBg}cc`,
@@ -152,7 +186,7 @@ export default function Preview() {
                 {c.text}
               </div>
             ))}
-          </div>
+          </>
         )}
       </div>
       <div className="player-bar">

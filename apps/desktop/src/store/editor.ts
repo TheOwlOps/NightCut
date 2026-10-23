@@ -79,6 +79,7 @@ interface EditorState {
     textColor?: string;
     textBg?: string;
     textShadow?: boolean;
+    textY?: number;
   }) => void;
   setSpeedCurve: (points: SpeedPoint[] | null) => void;
   addKeyframeAtPlayhead: () => void;
@@ -92,7 +93,7 @@ interface EditorState {
   setSelectedKeyframes: (kfs: import("../lib/project").Keyframe[]) => void;
   /** Add a media item as a PiP overlay clip at the playhead. */
   addOverlayClip: (mediaId: string) => void;
-  setSelectedOverlay: (patch: { overlayScale?: number; overlayX?: number; overlayY?: number }) => void;
+  setSelectedOverlay: (patch: { overlayScale?: number; overlayX?: number; overlayY?: number; blendMode?: string }) => void;
   updateKeyframe: (index: number, patch: Partial<Keyframe>) => void;
   removeKeyframe: (index: number) => void;
   freezeAtPlayhead: () => void;
@@ -361,6 +362,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       else delete clip.textBg;
     }
     if (patch.textShadow !== undefined) clip.textShadow = patch.textShadow;
+    if (patch.textY !== undefined) clip.textY = patch.textY;
     set(withHistory(s, next));
   },
 
@@ -564,6 +566,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       ?.clips.find((c) => c.id === s.selected!.clipId);
     if (!clip) return;
     Object.assign(clip, patch);
+    if (clip.blendMode === "normal") delete clip.blendMode;
     set(withHistory(s, next));
   },
 

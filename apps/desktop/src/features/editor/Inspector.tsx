@@ -262,6 +262,17 @@ export default function Inspector() {
                     onChange={(v) => setSelectedOverlay({ overlayX: v })} />
                   <Slider label="Y position" value={clip.overlayY ?? 0.9} min={0} max={1} step={0.05}
                     onChange={(v) => setSelectedOverlay({ overlayY: v })} />
+                  <label className="row">
+                    <span>Blend mode</span>
+                    <select
+                      value={clip.blendMode ?? "normal"}
+                      onChange={(e) => setSelectedOverlay({ blendMode: e.target.value })}
+                    >
+                      {["normal", "screen", "multiply", "overlay", "softlight", "hardlight", "darken", "lighten", "difference", "addition"].map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
               )}
               <div className="field">
@@ -328,6 +339,19 @@ export default function Inspector() {
                   value={clip.textColor ?? "#ffffff"}
                   onChange={(e) => setSelectedTextStyle({ textColor: e.target.value })}
                 />
+              </div>
+              <Slider label="Vertical position" value={clip.textY ?? 0.92} min={0} max={1} step={0.02}
+                onChange={(v) => setSelectedTextStyle({ textY: v })} />
+              <div className="row">
+                {[
+                  { n: "Top", y: 0 },
+                  { n: "Center", y: 0.5 },
+                  { n: "Bottom", y: 0.92 },
+                ].map((p) => (
+                  <button key={p.n} className="chip" onClick={() => setSelectedTextStyle({ textY: p.y })}>
+                    {p.n}
+                  </button>
+                ))}
               </div>
               <div className="row" style={{ alignItems: "center", gap: 8 }}>
                 <span style={{ fontSize: 12 }}>Background pill</span>

@@ -207,6 +207,16 @@ pub struct Clip {
     pub overlay_x: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlay_y: Option<f64>,
+    /// Vertical position of a text clip as a fraction of the free space
+    /// (0 = top, 0.5 = centered, 1 = bottom). None keeps the legacy
+    /// caption position (near the bottom).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_y: Option<f64>,
+    /// Blend mode for overlay clips: "screen", "multiply", "overlay",
+    /// "softlight", "hardlight", "darken", "lighten", "difference",
+    /// "addition". None/"normal" = plain alpha compositing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend_mode: Option<String>,
 }
 
 fn default_speed() -> f64 { 1.0 }
@@ -222,6 +232,7 @@ impl Clip {
             text_bg: None, text_shadow: false,
             speed_curve: None, keyframes: Vec::new(), freeze_duration: None,
             smooth_slowmo: false, overlay_scale: None, overlay_x: None, overlay_y: None,
+            text_y: None, blend_mode: None,
         }
     }
     pub fn text_clip(id: impl Into<String>, text: impl Into<String>, timeline_start: f64, duration: f64) -> Self {
