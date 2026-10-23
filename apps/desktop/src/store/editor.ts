@@ -72,6 +72,9 @@ interface EditorState {
   setSelectedSmoothSlowmo: (on: boolean) => void;
   /** Replace the selected clip's keyframes wholesale (motion tracking). */
   setSelectedKeyframes: (kfs: import("../lib/project").Keyframe[]) => void;
+  /** Add a media item as a PiP overlay clip at the playhead. */
+  addOverlayClip: (mediaId: string) => void;
+  setSelectedOverlay: (patch: { overlayScale?: number; overlayX?: number; overlayY?: number }) => void;
   updateKeyframe: (index: number, patch: Partial<Keyframe>) => void;
   removeKeyframe: (index: number) => void;
   freezeAtPlayhead: () => void;
@@ -473,6 +476,47 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   setMarkers: (markers) => set({ project: { ...get().project, markers } }),
+
+  addOverlayClip: (mediaId) => {
+    const s = get();
+    const item = s.media.find((m) => m.id === mediaId);
+    if (!item || item.kind !== "video") return;
+    const next = structuredClone(s.project);
+    let track = next.tracks.find((t) => t.id === "track-overlay");
+    if (!track) {
+      track = { id: "track-overlay", kind: "video", clips: [] };
+      next.tracks.splice(1, 0, track);
+    }
+    const clip: Clip = {
+      id: newId("clip"),
+      source: item.path ?? item.name,
+      inSec: 0,
+      outSec: item.duration,
+      timelineStart: Math.round(s.playhead * 100) / 100,
+      speed: 1,
+      volume: 1,
+      overlayScale: 0.35,
+      overlayX: 0.9,
+      overlayY: 0.9,
+    };
+    track.clips.push(clip);
+    set({
+      ...withHistory(s, next),
+      selected: { trackId: "track-overlay", clipId: clip.id },
+    });
+  },
+
+  setSelectedOverlay: (patch) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip) return;
+    Object.assign(clip, patch);
+    set(withHistory(s, next));
+  },
 
   setSelectedKeyframes: (kfs) => {
     const s = get();

@@ -28,6 +28,13 @@ export default function Preview() {
   const activeText = textTrack?.hidden
     ? []
     : textTrack?.clips.filter((c) => playhead >= c.timelineStart && playhead < clipEnd(c));
+  const overlayTrack = project.tracks.find((t) => t.id === "track-overlay");
+  const activeOverlay = overlayTrack?.hidden
+    ? undefined
+    : overlayTrack?.clips.find((c) => playhead >= c.timelineStart && playhead < clipEnd(c));
+  const overlayMedia = activeOverlay
+    ? media.find((m) => m.path === activeOverlay.source || m.name === activeOverlay.source)
+    : undefined;
 
   // Keep the <video> element in sync with the timeline playhead.
   // sourceAtPlayed handles constant speed, speed curves and freeze frames.
@@ -92,6 +99,30 @@ export default function Preview() {
           />
         ) : (
           <div className="preview-empty">NightCut</div>
+        )}
+        {activeOverlay && overlayMedia && (
+          <video
+            src={overlayMedia.url}
+            muted
+            playsInline
+            ref={(el) => {
+              if (el && activeOverlay) {
+                const t = activeOverlay.inSec + (playhead - activeOverlay.timelineStart) * activeOverlay.speed;
+                if (Math.abs(el.currentTime - t) > 0.4) el.currentTime = t;
+                if (playing) void el.play().catch(() => {});
+                else el.pause();
+              }
+            }}
+            style={{
+              position: "absolute",
+              width: `${(activeOverlay.overlayScale ?? 0.35) * 100}%`,
+              left: `${(activeOverlay.overlayX ?? 0.9) * (1 - (activeOverlay.overlayScale ?? 0.35)) * 100}%`,
+              top: `${(activeOverlay.overlayY ?? 0.9) * (1 - (activeOverlay.overlayScale ?? 0.35) * (height / Math.max(1, width))) * 100}%`,
+              borderRadius: 6,
+              boxShadow: "0 4px 18px rgba(0,0,0,0.5)",
+              pointerEvents: "none",
+            }}
+          />
         )}
         {activeText && activeText.length > 0 && (
           <div className="preview-text-stack">

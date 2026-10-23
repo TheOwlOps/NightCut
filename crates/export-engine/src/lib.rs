@@ -348,6 +348,24 @@ pub fn build_ffmpeg_args_stabilized(
         args.push("-i".into());
         args.push(path.display().to_string());
     }
+    // Overlay (PiP) clips: every video track after the first. Their
+    // inputs follow the music inputs.
+    let overlay_tracks: Vec<_> = project.tracks.iter()
+        .filter(|t| t.kind == TrackKind::Video)
+        .skip(1)
+        .filter(|t| !t.hidden)
+        .collect();
+    let mut overlay_clips: Vec<&editor_core::Clip> = overlay_tracks.iter()
+        .flat_map(|t| t.clips.iter().filter(|c| !c.source.is_empty()))
+        .collect();
+    overlay_clips.sort_by(|a, b| a.timeline_start.total_cmp(&b.timeline_start));
+    let overlay_input_start = video_clips.len() + music.len();
+    for clip in &overlay_clips {
+        let path = sources.get(&clip.id)
+            .ok_or_else(|| ExportError::UnresolvedSource(clip.id.clone()))?;
+        args.push("-i".into());
+        args.push(path.display().to_string());
+    }
 
     let (w, h, fps) = (project.canvas.width, project.canvas.height, project.canvas.fps);
     let mut filters: Vec<String> = Vec::new();
@@ -550,8 +568,44 @@ pub fn build_ffmpeg_args_stabilized(
     let vcat = vcur;
     let acat = acur;
 
-    // Text overlays on top of the merged video.
+    // PiP overlays: composite each overlay clip over the merged base at
+    // its timeline window, scaled to its canvas fraction and positioned
+    // by its center fractions (defaults: 0.35 wide, bottom-right).
     let mut current = vcat;
+    for (k, clip) in overlay_clips.iter().enumerate() {
+        let idx = overlay_input_start + k;
+        let dur = clip.duration();
+        let scale_f = clip.overlay_scale.unwrap_or(0.35).clamp(0.05, 1.0);
+        let cx = clip.overlay_x.unwrap_or(0.8).clamp(0.0, 1.0);
+        let cy = clip.overlay_y.unwrap_or(0.8).clamp(0.0, 1.0);
+        let pw = ((w as f64 * scale_f).round() as u32).max(2);
+        let vfx: Vec<String> = clip.effects.iter()
+            .flat_map(|fx| effect_video_filters(fx, dur))
+            .collect();
+        let mut chain = vec![
+            format!("trim=start={:.3}:end={:.3}", clip.in_sec, clip.out_sec),
+            format!("setpts=(PTS-STARTPTS)/{:.3}", clip.speed.max(0.01)),
+            format!("scale={pw}:-2"),
+            format!("fps={fps}"),
+            "setsar=1".to_string(),
+            "format=yuva420p".to_string(),
+        ];
+        chain.extend(vfx);
+        // Chroma/mask alpha survives in yuva; the matte path is skipped
+        // for overlays in v1 (keyframe opacity not applied either).
+        chain.push(format!("setpts=PTS+{:.3}/TB", clip.timeline_start));
+        filters.push(format!("[{idx}:v]{}[ov{k}]", chain.join(",")));
+        let next = format!("vov{k}");
+        filters.push(format!(
+            "[{current}][ov{k}]overlay=x='(W-w)*{cx:.3}':y='(H-h)*{cy:.3}':enable='between(t,{:.3},{:.3})'[{next}]",
+            clip.timeline_start,
+            clip.timeline_end(),
+        ));
+        current = next;
+    }
+
+    // Text overlays on top of the merged video.
+    let mut current = current;
     if let Some(font) = &settings.font_file {
         let text_track = project.tracks.iter().find(|t| t.kind == TrackKind::Text);
         if let Some(track) = text_track {
@@ -965,6 +1019,61 @@ mod tests {
             .expect("gif render");
         let head = std::fs::read(&gif_path).unwrap();
         assert_eq!(&head[0..3], b"GIF", "output should be a real GIF");
+    }
+
+    /// Live render with a PiP overlay track: red base, green overlay in
+    /// the bottom-right quarter window.
+    #[test]
+    #[ignore]
+    fn renders_pip_overlay() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mk = |name: &str, color: &str| {
+            let p = dir.join(name);
+            if !p.exists() {
+                let status = Command::new("ffmpeg")
+                    .args(["-y", "-v", "error", "-f", "lavfi", "-i",
+                           &format!("color=c={color}:duration=2:size=320x240:rate=30"),
+                           "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                           "-c:v", "libx264", "-c:a", "aac", "-shortest"])
+                    .arg(&p).status().unwrap();
+                assert!(status.success());
+            }
+            p
+        };
+        let base = mk("base-red.mp4", "red");
+        let over = mk("over-green.mp4", "green");
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        p.tracks[0].clips = vec![Clip::new("c1", "base-red.mp4", 0.0, 2.0, 0.0)];
+        let mut oc = Clip::new("ov1", "over-green.mp4", 0.0, 2.0, 0.0);
+        oc.overlay_scale = Some(0.5);
+        oc.overlay_x = Some(1.0);
+        oc.overlay_y = Some(1.0);
+        p.tracks.insert(1, {
+            let mut t = editor_core::Track::new("track-overlay", TrackKind::Video);
+            t.clips = vec![oc];
+            t
+        });
+        let sources: BTreeMap<String, PathBuf> =
+            [("c1".to_string(), base), ("ov1".to_string(), over)].into_iter().collect();
+        let out = dir.join("pip.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).expect("pip render");
+        // Frame at t=1: center should be red-ish, bottom-right green-ish.
+        let raw = Command::new("ffmpeg")
+            .args(["-v", "error", "-ss", "1", "-i"])
+            .arg(&out)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output().unwrap();
+        assert!(raw.status.success());
+        let px = |x: usize, y: usize| {
+            let i = (y * 320 + x) * 3;
+            (raw.stdout[i], raw.stdout[i + 1], raw.stdout[i + 2])
+        };
+        let (r1, g1, _) = px(40, 40);
+        assert!(r1 > 120 && g1 < 110, "base area should be red, got r={r1} g={g1}");
+        let (r2, g2, _) = px(280, 200);
+        assert!(g2 > 90 && r2 < 130, "pip area should be green, got r={r2} g={g2}");
     }
 
     #[test]

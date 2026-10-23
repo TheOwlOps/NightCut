@@ -47,7 +47,7 @@ function captureThumb(video: HTMLVideoElement, onDone: (dataUrl: string) => void
  * (native picker) so probing/proxies/auto-captions work; the browser
  * build uses object URLs only. */
 export default function MediaBin() {
-  const { media, addMedia, addToTimeline, setMediaThumb } = useEditor();
+  const { media, addMedia, addToTimeline, setMediaThumb, addOverlayClip } = useEditor();
   const fileRef = useRef<HTMLInputElement>(null);
 
   const importBlobs = (files: FileList | null) => {
@@ -143,6 +143,20 @@ export default function MediaBin() {
           </button>
         ))}
       </div>
+      {media.some((m) => m.kind === "video") && (
+        <div className="field">
+          <span>Picture in picture</span>
+          <div className="row" style={{ flexWrap: "wrap" }}>
+            {media.filter((m) => m.kind === "video").map((m) => (
+              <button key={m.id} className="chip" title={`Add ${m.name} as an overlay at the playhead`}
+                onClick={() => addOverlayClip(m.id)}>
+                📺 {m.name.length > 14 ? `${m.name.slice(0, 14)}…` : m.name}
+              </button>
+            ))}
+          </div>
+          <p className="hint">Overlay clips land on the PiP track — position and size in the Inspector.</p>
+        </div>
+      )}
     </div>
   );
 }

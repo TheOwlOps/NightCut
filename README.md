@@ -63,6 +63,9 @@ your machine, and stays small:
       (minterpolate), stickers tab, proxy mode (auto proxy on import +
       preview toggle), export presets (720p/1080p caps, GIF) and the
       full shortcut set (Ctrl+B split, Ctrl+E export, M marker, arrows)
+- [x] Wave 7: picture-in-picture / overlay track (second video track
+      composited in export with size + position controls, live in the
+      preview), first successful `tauri build` packaging run
 - [ ] Phase 1 leftovers: music mixing polish in UI
 - [ ] Phase 2 (the "smooth like the big editors" phase): proxy cache,
       thumbnail/waveform rendering on the timeline, pre-render around playhead

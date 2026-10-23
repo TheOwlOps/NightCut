@@ -121,7 +121,7 @@ export default function Inspector() {
     project, selected, updateSelectedText, setCanvas, addEffect, removeEffect, updateEffect,
     setSelectedSpeed, setSelectedVolume, setSelectedTransitionDuration, removeSelectedTransition,
     setSelectedTextStyle, setSpeedCurve, addKeyframeAtPlayhead, updateKeyframe, removeKeyframe,
-    applyAnimationPreset, setSelectedSmoothSlowmo,
+    applyAnimationPreset, setSelectedSmoothSlowmo, setSelectedOverlay,
   } = useEditor();
   const [newFx, setNewFx] = useState<Effect["type"]>("adjust");
   const clip = selected
@@ -239,6 +239,31 @@ export default function Inspector() {
                 <MotionTrackButton />
                 <RemoveBgButton />
               </div>
+              {selected?.trackId === "track-overlay" && (
+                <div className="field">
+                  <span>Picture in picture</span>
+                  <Slider label="Size" value={clip.overlayScale ?? 0.35} min={0.1} max={1} step={0.05}
+                    onChange={(v) => setSelectedOverlay({ overlayScale: v })} />
+                  <div className="row" style={{ flexWrap: "wrap" }}>
+                    {[
+                      { n: "↖ Top-left", x: 0, y: 0 },
+                      { n: "↗ Top-right", x: 1, y: 0 },
+                      { n: "⏺ Center", x: 0.5, y: 0.5 },
+                      { n: "↙ Bottom-left", x: 0, y: 1 },
+                      { n: "↘ Bottom-right", x: 1, y: 1 },
+                    ].map((p) => (
+                      <button key={p.n} className="chip"
+                        onClick={() => setSelectedOverlay({ overlayX: p.x, overlayY: p.y })}>
+                        {p.n}
+                      </button>
+                    ))}
+                  </div>
+                  <Slider label="X position" value={clip.overlayX ?? 0.9} min={0} max={1} step={0.05}
+                    onChange={(v) => setSelectedOverlay({ overlayX: v })} />
+                  <Slider label="Y position" value={clip.overlayY ?? 0.9} min={0} max={1} step={0.05}
+                    onChange={(v) => setSelectedOverlay({ overlayY: v })} />
+                </div>
+              )}
               <div className="field">
                 <span>Keyframes ◆</span>
                 <button onClick={addKeyframeAtPlayhead}>◆ Add keyframe at playhead</button>

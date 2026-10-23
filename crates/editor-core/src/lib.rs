@@ -179,6 +179,16 @@ pub struct Clip {
     /// clip plays slower than 1x (CapCut "smooth slow-mo").
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub smooth_slowmo: bool,
+    /// PiP/overlay placement for clips on overlay (non-first) video
+    /// tracks: width fraction of the canvas (0..1) and position along
+    /// the free space (0 = top-left corner, 1 = bottom-right, 0.5 =
+    /// centered). Defaults: 0.35 wide, bottom-right (0.8, 0.8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_x: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_y: Option<f64>,
 }
 
 fn default_speed() -> f64 { 1.0 }
@@ -192,7 +202,7 @@ impl Clip {
             speed: 1.0, volume: 1.0, text: None, font_size: None,
             effects: Vec::new(), transition_in: None, text_color: None,
             speed_curve: None, keyframes: Vec::new(), freeze_duration: None,
-            smooth_slowmo: false,
+            smooth_slowmo: false, overlay_scale: None, overlay_x: None, overlay_y: None,
         }
     }
     pub fn text_clip(id: impl Into<String>, text: impl Into<String>, timeline_start: f64, duration: f64) -> Self {

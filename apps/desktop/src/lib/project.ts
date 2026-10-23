@@ -338,6 +338,11 @@ export interface Clip {
   freezeDuration?: number;
   /** Smooth slow motion (motion interpolation under 1x). */
   smoothSlowmo?: boolean;
+  /** PiP placement on overlay tracks: width fraction + position along
+   * the free space (0 = top-left, 1 = bottom-right). */
+  overlayScale?: number;
+  overlayX?: number;
+  overlayY?: number;
 }
 
 export interface Track {
@@ -373,6 +378,7 @@ export function emptyProject(): Project {
     canvas: { width: 1080, height: 1920, fps: 30 },
     tracks: [
       { id: "track-video", kind: "video", clips: [] },
+      { id: "track-overlay", kind: "video", clips: [] },
       { id: "track-audio", kind: "audio", clips: [] },
       { id: "track-text", kind: "text", clips: [] },
     ],
@@ -437,6 +443,9 @@ export function toRustJson(p: Project): string {
           ...(c.keyframes && c.keyframes.length > 0 ? { keyframes: c.keyframes } : {}),
           ...(c.freezeDuration !== undefined ? { freezeDuration: c.freezeDuration } : {}),
           ...(c.smoothSlowmo ? { smoothSlowmo: true } : {}),
+          ...(c.overlayScale !== undefined ? { overlayScale: c.overlayScale } : {}),
+          ...(c.overlayX !== undefined ? { overlayX: c.overlayX } : {}),
+          ...(c.overlayY !== undefined ? { overlayY: c.overlayY } : {}),
         })),
       })),
       ...((p.markers?.length ?? 0) > 0 ? { markers: p.markers } : {}),
