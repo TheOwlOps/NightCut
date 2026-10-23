@@ -66,6 +66,26 @@ your machine, and stays small:
 - [x] Wave 7: picture-in-picture / overlay track (second video track
       composited in export with size + position controls, live in the
       preview), first successful `tauri build` packaging run
+- [x] Wave 8: loudness normalization, video denoise, curves, color
+      wheels, canvas blur fill, audio-only export, scene + silence
+      detection, and the `nightcut-mcp` agent server (stdio MCP)
+- [x] Waves 9–11 (CapCut fidelity): design system v3, custom icon set,
+      editable project name, orange text clips, measured against the
+      real CapCut web editor (docs/CAPCUT-STUDY.md)
+- [x] Wave 12: Elements tab, local Brand Kit, data-only Plugins
+      (plugin.json packs), image overlays / image media end to end
+- [x] Wave 13: per-clip text vertical position, overlay blend modes
+      (9, blended in planar RGB)
+- [x] Wave 14: HSL panel (8 hue ranges via a generated 3D LUT),
+      deflicker, text glow, scopes (histogram / waveform / vectorscope)
+- [x] Wave 15: compound clips — Ctrl+click multi-select, nested
+      projects rendered recursively at export, desktop pre-render for
+      preview, MCP tool
+- [x] Wave 16: Enhance Voice + Vocal Isolation (dialoguenhance)
+- [x] Wave 17: transcript-based editing (click words to seek, cut
+      words/ranges from the video, one-click filler removal EN + VI),
+      bilingual captions (multi text-track export)
+- [x] Wave 18: screen recorder (gdigrab / avfoundation / x11grab)
 - [ ] Phase 1 leftovers: music mixing polish in UI
 - [ ] Phase 2 (the "smooth like the big editors" phase): proxy cache,
       thumbnail/waveform rendering on the timeline, pre-render around playhead
