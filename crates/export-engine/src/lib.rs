@@ -140,6 +140,10 @@ pub fn effect_video_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
         Effect::PitchShift { .. } => Vec::new(), // audio-only effect
         Effect::Loudnorm { .. } => Vec::new(),  // audio-only effect
         Effect::Lut { ref path } => vec![format!("lut3d=file='{}'", path.replace('\'', "\\'"))],
+        Effect::Deflicker { size } => vec![format!("deflicker=size={}:mode=pm", size.clamp(2, 30))],
+        Effect::Hsl { ref shifts } => {
+            vec![format!("lut3d=file='{}'", hsl_cube_path(shifts).display())]
+        }
         Effect::VideoDenoise { strength } => {
             let s = strength.clamp(0.0, 1.0);
             vec![format!("hqdn3d={:.1}:{:.1}:{:.1}:{:.1}", 2.0 + s * 8.0, 2.0 + s * 8.0, 3.0 + s * 10.0, 3.0 + s * 10.0)]
@@ -326,6 +330,128 @@ pub fn effect_audio_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
 }
 
 /// Escape a string for use inside an FFmpeg drawtext `text='...'`.
+/// Hue-range centers (degrees) for the 8 HSL ranges, in the order the
+/// editor stores them: red, orange, yellow, green, cyan, blue,
+/// purple, magenta.
+pub const HSL_RANGE_CENTERS: [f64; 8] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 280.0, 330.0];
+
+fn rgb_to_hsl(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < 1e-9 {
+        return (0.0, 0.0, l);
+    }
+    let d = max - min;
+    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+    let h = if max == r {
+        60.0 * (((g - b) / d) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    ((h + 360.0) % 360.0, s, l)
+}
+
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (f64, f64, f64) {
+    let h = ((h % 360.0) + 360.0) % 360.0;
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match h {
+        v if v < 60.0 => (c, x, 0.0),
+        v if v < 120.0 => (x, c, 0.0),
+        v if v < 180.0 => (0.0, c, x),
+        v if v < 240.0 => (0.0, x, c),
+        v if v < 300.0 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    (r + m, g + m, b + m)
+}
+
+/// Apply the 8-range HSL shifts (sliders -100..100) to one RGB pixel.
+pub fn apply_hsl(r: f64, g: f64, b: f64, shifts: &[[f64; 3]]) -> (f64, f64, f64) {
+    if shifts.len() < 8 || shifts.iter().all(|s| s.iter().all(|v| *v == 0.0)) {
+        return (r, g, b);
+    }
+    let (h, s, l) = rgb_to_hsl(r, g, b);
+    // Triangular weights whose falloff on each side reaches zero at
+    // the neighboring range's center, so a range's slider applies at
+    // full strength at its own center hue (no dilution).
+    let mut weights = [0.0f64; 8];
+    let mut total = 0.0;
+    for (k, center) in HSL_RANGE_CENTERS.iter().enumerate() {
+        let prev = HSL_RANGE_CENTERS[(k + 7) % 8];
+        let next = HSL_RANGE_CENTERS[(k + 1) % 8];
+        let left_span = (center - prev + 360.0) % 360.0;
+        let right_span = (next - center + 360.0) % 360.0;
+        // Signed circular distance from center to h, in (-180, 180].
+        let mut d = (h - center + 540.0) % 360.0 - 180.0;
+        if d == -180.0 { d = 180.0; }
+        let w = if d < 0.0 {
+            (1.0 + d / left_span).clamp(0.0, 1.0)
+        } else {
+            (1.0 - d / right_span).clamp(0.0, 1.0)
+        };
+        weights[k] = w;
+        total += w;
+    }
+    if total <= 0.0 {
+        return (r, g, b);
+    }
+    let (mut dh, mut ds, mut dl) = (0.0, 0.0, 0.0);
+    for k in 0..8 {
+        let w = weights[k] / total;
+        dh += w * shifts[k][0];
+        ds += w * shifts[k][1];
+        dl += w * shifts[k][2];
+    }
+    // Hue shifts fade out for near-gray pixels (their hue is unstable);
+    // saturation/lightness apply at full weight.
+    let nh = h + dh * 1.8 * s.max(0.15);
+    let ns = (s * (1.0 + ds / 100.0)).clamp(0.0, 1.0);
+    let nl = (l + dl / 200.0).clamp(0.0, 1.0);
+    hsl_to_rgb(nh, ns, nl)
+}
+
+/// Generate (or reuse from the temp cache) a 32^3 .cube LUT realizing
+/// the HSL shifts, and return its path for lut3d.
+pub fn hsl_cube_path(shifts: &[[f64; 3]]) -> PathBuf {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for row in shifts {
+        for v in row {
+            for byte in v.to_bits().to_le_bytes() {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+    // v2: triangular range weights. The version tag keeps stale cubes
+    // from an older weighting scheme out of the cache.
+    let path = std::env::temp_dir().join(format!("nightcut-hsl-v2-{hash:016x}.cube"));
+    if path.exists() {
+        return path;
+    }
+    const N: usize = 32;
+    let mut out = String::with_capacity(1 << 20);
+    out.push_str("TITLE \"nightcut-hsl\"\nLUT_3D_SIZE 32\n");
+    let denom = (N - 1) as f64;
+    for bi in 0..N {
+        for gi in 0..N {
+            for ri in 0..N {
+                let (r, g, b) = apply_hsl(ri as f64 / denom, gi as f64 / denom, bi as f64 / denom, shifts);
+                out.push_str(&format!(
+                    "{:.6} {:.6} {:.6}\n",
+                    r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)
+                ));
+            }
+        }
+    }
+    let _ = std::fs::write(&path, out);
+    path
+}
+
 /// The clip's blend mode if it names a real ffmpeg blend mode other
 /// than normal compositing.
 pub fn blend_mode_of(clip: &editor_core::Clip) -> Option<&'static str> {
@@ -773,6 +899,16 @@ pub fn build_ffmpeg_args_full(
                 if clip.text_shadow {
                     extra.push_str(":shadowcolor=black@0.6:shadowx=3:shadowy=3");
                 }
+                // Glow: a thick translucent outline in the glow color
+                // replaces the black border (drawtext has no blur, so
+                // the halo is an outline approximation — see docs).
+                let (borderw, bordercolor) = match &clip.text_glow {
+                    Some(glow) => (
+                        (clip.font_size.unwrap_or(64) / 6).max(2),
+                        format!("0x{}@0.55", glow.trim_start_matches('#')),
+                    ),
+                    None => (3, "black".to_string()),
+                };
                 // Per-clip vertical position: (h-text_h)*f puts the top
                 // edge at fraction f of the free space (0=top, 1=bottom);
                 // unset keeps the legacy caption spot.
@@ -781,11 +917,13 @@ pub fn build_ffmpeg_args_full(
                     None => "h-220".to_string(),
                 };
                 filters.push(format!(
-                    "[{current}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor={}:borderw=3:bordercolor=black{}:x=(w-text_w)/2:y={}:enable='between(t,{:.3},{:.3})'[{next}]",
+                    "[{current}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor={}:borderw={}:bordercolor={}{}:x=(w-text_w)/2:y={}:enable='between(t,{:.3},{:.3})'[{next}]",
                     font.display(),
                     escape_drawtext(text),
                     clip.font_size.unwrap_or(64),
                     color,
+                    borderw,
+                    bordercolor,
                     extra,
                     y_expr,
                     clip.timeline_start,
@@ -997,6 +1135,37 @@ pub fn render(
 mod tests {
     use super::*;
     use editor_core::Clip;
+
+    #[test]
+    fn hsl_shifts_rotate_reds_and_leave_grays() {
+        let zero = vec![[0.0; 3]; 8];
+        let (r, g, b) = apply_hsl(1.0, 0.0, 0.0, &zero);
+        assert!((r - 1.0).abs() < 0.01 && g < 0.01 && b < 0.01, "identity: {r},{g},{b}");
+        // Red range hue +50 (slider) = +90 degrees: red -> yellow-green.
+        let mut shifts = vec![[0.0; 3]; 8];
+        shifts[0] = [50.0, 0.0, 0.0];
+        let (r, g, b) = apply_hsl(1.0, 0.0, 0.0, &shifts);
+        assert!(g > 0.9 && r > 0.4 && r < 0.65 && b < 0.2, "rotated red (+90deg = chartreuse): {r},{g},{b}");
+        // Gray is untouched by a red-range saturation cut.
+        let mut shifts2 = vec![[0.0; 3]; 8];
+        shifts2[0] = [0.0, -100.0, 0.0];
+        let (r, g, b) = apply_hsl(0.5, 0.5, 0.5, &shifts2);
+        assert!((r - 0.5).abs() < 0.02 && (g - 0.5).abs() < 0.02, "gray stays: {r},{g},{b}");
+        // Blue is untouched by a red-range saturation cut.
+        let (r, g, b) = apply_hsl(0.0, 0.0, 1.0, &shifts2);
+        assert!(b > 0.95 && r < 0.05, "blue stays: {r},{g},{b}");
+    }
+
+    #[test]
+    fn hsl_and_deflicker_map_to_filters() {
+        let mut shifts = vec![[0.0; 3]; 8];
+        shifts[3] = [20.0, -30.0, 10.0];
+        let f = effect_video_filters(&Effect::Hsl { shifts }, 3.0);
+        assert!(f[0].starts_with("lut3d=file='"), "{f:?}");
+        assert!(f[0].contains("nightcut-hsl-"), "{f:?}");
+        let d = effect_video_filters(&Effect::Deflicker { size: 7 }, 3.0);
+        assert_eq!(d, vec!["deflicker=size=7:mode=pm".to_string()]);
+    }
 
     fn two_clip_project() -> (Project, BTreeMap<String, PathBuf>) {
         let mut p = Project::default();
@@ -1480,6 +1649,61 @@ mod tests {
         assert!(r1 > 120 && g1 < 110, "outside rect should stay red, got r={r1} g={g1}");
         let (r2, g2, b2) = px(280, 200);
         assert!(r2 > 180 && g2 > 180 && b2 < 120, "screen(red,green) should be yellow, got {r2},{g2},{b2}");
+    }
+
+    /// Live render: HSL range shift recolors the frame; text glow
+    /// leaves a colored halo.
+    #[test]
+    #[ignore]
+    fn renders_hsl_shift_and_text_glow() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let base_path = dir.join("base-red.mp4");
+        if !base_path.exists() {
+            let status = Command::new("ffmpeg")
+                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=320x240:d=2:r=30",
+                       "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                       "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+                .arg(&base_path).status().unwrap();
+            assert!(status.success());
+        }
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        let mut c1 = Clip::new("c1", "base-red.mp4", 0.0, 2.0, 0.0);
+        let mut shifts = vec![[0.0; 3]; 8];
+        shifts[0] = [50.0, 0.0, 0.0]; // reds +90 degrees -> chartreuse
+        c1.effects.push(Effect::Hsl { shifts });
+        p.tracks[0].clips = vec![c1];
+        let mut t = Clip::text_clip("t1", "HI", 0.0, 2.0);
+        t.font_size = Some(90);
+        t.text_y = Some(0.5);
+        t.text_glow = Some("#00ffff".to_string());
+        let ti = p.tracks.iter().position(|t| t.kind == TrackKind::Text).unwrap();
+        p.tracks[ti].clips = vec![t];
+        let sources = BTreeMap::from([("c1".to_string(), base_path)]);
+        let out = dir.join("hsl-glow.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).expect("render");
+        let raw0 = Command::new("ffmpeg")
+            .args(["-v", "error", "-ss", "1", "-i"])
+            .arg(&out)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output().unwrap();
+        assert!(raw0.status.success());
+        let pi = (20 * 320 + 20) * 3;
+        let (r2, g2, b2) = (raw0.stdout[pi], raw0.stdout[pi + 1], raw0.stdout[pi + 2]);
+        assert!(g2 > 170 && r2 > 60 && r2 < 210 && b2 < 90,
+            "HSL-rotated red should be chartreuse, got {r2},{g2},{b2}");
+        let raw = Command::new("ffmpeg")
+            .args(["-v", "error", "-ss", "1", "-i"])
+            .arg(&out)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output().unwrap();
+        assert!(raw.status.success());
+        let mut cyan = 0usize;
+        for px in raw.stdout.chunks_exact(3) {
+            if px[2] > 150 && px[1] > 150 && px[0] < 110 { cyan += 1; }
+        }
+        assert!(cyan > 40, "expected a cyan glow halo, found {cyan} cyan px");
     }
 
     /// Live render: two text clips at different heights no longer stack.

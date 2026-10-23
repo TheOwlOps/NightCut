@@ -80,6 +80,7 @@ interface EditorState {
     textBg?: string;
     textShadow?: boolean;
     textY?: number;
+    textGlow?: string;
   }) => void;
   setSpeedCurve: (points: SpeedPoint[] | null) => void;
   addKeyframeAtPlayhead: () => void;
@@ -363,6 +364,10 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
     if (patch.textShadow !== undefined) clip.textShadow = patch.textShadow;
     if (patch.textY !== undefined) clip.textY = patch.textY;
+    if (patch.textGlow !== undefined) {
+      if (patch.textGlow) clip.textGlow = patch.textGlow;
+      else delete clip.textGlow;
+    }
     set(withHistory(s, next));
   },
 

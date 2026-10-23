@@ -101,6 +101,14 @@ pub enum Effect {
     /// Color wheels (CapCut): tint strengths -1..1 for shadows,
     /// midtones, highlights as (r, g, b) offsets via colorbalance.
     ColorWheels { shadows: [f64; 3], midtones: [f64; 3], highlights: [f64; 3] },
+    /// Per-hue-range HSL adjustment (CapCut HSL panel): 8 ranges
+    /// (red, orange, yellow, green, cyan, blue, purple, magenta), each
+    /// [hue, saturation, lightness] shifts on -100..100 sliders.
+    /// Realized at export by a generated 3D LUT.
+    Hsl { shifts: Vec<[f64; 3]> },
+    /// Video deflicker (CapCut Deflicker): temporal mean over `size`
+    /// frames.
+    Deflicker { size: u32 },
 }
 
 /// One point of a speed curve (CapCut "Curve" speed). `at` is a fraction
@@ -183,6 +191,10 @@ pub struct Clip {
     /// Drop shadow for text clips.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub text_shadow: bool,
+    /// Glow halo color (#RRGGBB) for text clips: a thick translucent
+    /// outline in this color behind the glyphs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_glow: Option<String>,
     /// Speed curve; when present it replaces the constant `speed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed_curve: Option<Vec<SpeedPoint>>,
@@ -229,7 +241,7 @@ impl Clip {
             in_sec, out_sec, timeline_start,
             speed: 1.0, volume: 1.0, text: None, font_size: None,
             effects: Vec::new(), transition_in: None, text_color: None,
-            text_bg: None, text_shadow: false,
+            text_bg: None, text_shadow: false, text_glow: None,
             speed_curve: None, keyframes: Vec::new(), freeze_duration: None,
             smooth_slowmo: false, overlay_scale: None, overlay_x: None, overlay_y: None,
             text_y: None, blend_mode: None,

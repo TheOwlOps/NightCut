@@ -24,7 +24,7 @@ const EFFECT_ICONS: Partial<Record<Effect["type"], string>> = {
   fade_in: "↗", fade_out: "↘", reverse: "⏪", chroma_key: "🟢",
   denoise: "🔇", mask: "🎭", stabilize: "🎯",
   pitch_shift: "🎤", lut: "🎞", loudnorm: "🔊", video_denoise: "✨",
-  curves: "📈", color_wheels: "🎡",
+  curves: "📈", color_wheels: "🎡", hsl: "🌈", deflicker: "💡",
 };
 
 const STICKERS = ["🔥", "❤️", "😂", "🎉", "⭐", "👍", "💯", "🚀", "🎬", "🎵", "⚡", "🌙", "✅", "❌", "➡️", "💥"];

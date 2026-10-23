@@ -373,6 +373,19 @@ export default function Inspector() {
                   Shadow
                 </label>
               </div>
+              <div className="row" style={{ alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12 }}>Glow</span>
+                <input
+                  type="color"
+                  className="color-input"
+                  value={clip.textGlow ?? "#22d3ee"}
+                  onChange={(e) => setSelectedTextStyle({ textGlow: e.target.value })}
+                />
+                {clip.textGlow && (
+                  <button onClick={() => setSelectedTextStyle({ textGlow: "" })}>Off</button>
+                )}
+                <span className="hint" style={{ margin: 0 }}>halo outline at export</span>
+              </div>
             </div>
           )}
           {clip.text === undefined && (
@@ -542,7 +555,62 @@ function EffectControls({ effect, onChange }: { effect: Effect; onChange: (e: Ef
           <p className="hint">Applied with lut3d at export on the desktop build.</p>
         </>
       );
+    case "deflicker":
+      return (
+        <>
+          <Slider label="Window (frames)" value={effect.size} min={2} max={30} step={1}
+            onChange={(v) => onChange({ ...effect, size: Math.round(v) })} />
+          <p className="hint">Temporal smoothing that removes brightness flicker at export.</p>
+        </>
+      );
+    case "hsl":
+      return <HslControls effect={effect} onChange={onChange} />;
     default:
       return null; // grayscale / mirror / invert are on-off effects
   }
+}
+
+const HSL_RANGES = [
+  { name: "Reds", color: "#ef4444" },
+  { name: "Oranges", color: "#f97316" },
+  { name: "Yellows", color: "#eab308" },
+  { name: "Greens", color: "#22c55e" },
+  { name: "Cyans", color: "#06b6d4" },
+  { name: "Blues", color: "#3b82f6" },
+  { name: "Purples", color: "#a855f7" },
+  { name: "Magentas", color: "#ec4899" },
+];
+
+function HslControls({ effect, onChange }: {
+  effect: Extract<Effect, { type: "hsl" }>;
+  onChange: (e: Effect) => void;
+}) {
+  const [range, setRange] = useState(0);
+  const shifts = effect.shifts.length === 8 ? effect.shifts : Array.from({ length: 8 }, () => [0, 0, 0] as [number, number, number]);
+  const cur = shifts[range] ?? [0, 0, 0];
+  const set = (i: number, v: number) => {
+    const next = shifts.map((row) => [...row] as [number, number, number]);
+    next[range][i] = Math.round(v);
+    onChange({ ...effect, shifts: next });
+  };
+  return (
+    <>
+      <div className="row" style={{ flexWrap: "wrap" }}>
+        {HSL_RANGES.map((r, i) => (
+          <button
+            key={r.name}
+            className={"chip" + (i === range ? " on" : "")}
+            onClick={() => setRange(i)}
+          >
+            <span className="dot" style={{ background: r.color, display: "inline-block", width: 8, height: 8, borderRadius: "50%", marginRight: 4 }} />
+            {r.name}
+          </button>
+        ))}
+      </div>
+      <Slider label="Hue" value={cur[0]} min={-100} max={100} step={1} onChange={(v) => set(0, v)} />
+      <Slider label="Saturation" value={cur[1]} min={-100} max={100} step={1} onChange={(v) => set(1, v)} />
+      <Slider label="Lightness" value={cur[2]} min={-100} max={100} step={1} onChange={(v) => set(2, v)} />
+      <p className="hint">Per-hue-range grading, baked into a generated 3D LUT at export.</p>
+    </>
+  );
 }
