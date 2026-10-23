@@ -871,7 +871,10 @@ pub fn build_ffmpeg_args_full(
             // packed rgb24 is misread by the blend filter entirely.
             filters.push(format!("[ov{k}]format=gbrp[ovf{k}]"));
             filters.push(format!("[{current}]split=2[baseM{k}][baseC{k}]"));
-            filters.push(format!("[baseC{k}]crop={pw}:{ph}:{px}:{py},format=gbrp[crop{k}]"));
+            // exact=1: without it, crop silently rounds odd widths
+            // down to the chroma grid (435 -> 434) and blend rejects
+            // the mismatched pair.
+            filters.push(format!("[baseC{k}]crop={pw}:{ph}:{px}:{py}:exact=1,format=gbrp[crop{k}]"));
             filters.push(format!("[crop{k}][ovf{k}]blend=all_mode={mode},format=yuv420p[bl{k}]"));
             filters.push(format!(
                 "[baseM{k}][bl{k}]overlay={px}:{py}:enable='between(t,{:.3},{:.3})'[{next}]",
@@ -1654,6 +1657,30 @@ mod tests {
     }
 
     #[test]
+    fn blend_crop_uses_exact_sizing() {
+        // Regression: at a 720p canvas with scale 0.34 the overlay is
+        // 435px wide (odd); without exact=1 the crop filter rounds it
+        // to 434 and ffmpeg's blend rejects the size mismatch.
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 1280, height: 720, fps: 30 };
+        p.tracks[0].clips = vec![Clip::new("c1", "a.mp4", 0.0, 4.0, 0.0)];
+        let mut oc = Clip::new("ov1", "pip.mp4", 0.0, 4.0, 0.0);
+        oc.overlay_scale = Some(0.34);
+        oc.blend_mode = Some("screen".to_string());
+        let mut ot = editor_core::Track::new("track-overlay", TrackKind::Video);
+        ot.clips.push(oc);
+        p.tracks.insert(1, ot);
+        let sources = BTreeMap::from([
+            ("c1".to_string(), PathBuf::from("/media/a.mp4")),
+            ("ov1".to_string(), PathBuf::from("/media/pip.mp4")),
+        ]);
+        let dims = BTreeMap::from([("ov1".to_string(), (320u32, 180u32))]);
+        let args = build_ffmpeg_args_full(&p, &sources, Path::new("/tmp/o.mp4"), &ExportSettings::default(), &BTreeMap::new(), &dims).unwrap();
+        let j = args.join(" ");
+        assert!(j.contains("crop=435:244"), "{j}");
+        assert!(j.contains(":exact=1"), "{j}");
+    }
+
     fn blend_mode_uses_crop_blend_path() {
         let mut p = Project::default();
         p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
@@ -2156,3 +2183,4 @@ mod tests {
         assert!(out.metadata().unwrap().len() > 10_000);
     }
 }
+
