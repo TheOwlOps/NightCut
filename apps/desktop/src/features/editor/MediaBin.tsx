@@ -54,6 +54,13 @@ export default function MediaBin() {
     if (!files) return;
     for (const file of Array.from(files)) {
       const url = URL.createObjectURL(file);
+      if (file.type.startsWith("image")) {
+        // Still image: becomes an overlay (logo / Elements art), 5s default.
+        const id = newId("media");
+        addMedia({ id, name: file.name, url, duration: 5, kind: "image" });
+        setMediaThumb(id, url);
+        continue;
+      }
       const kind = file.type.startsWith("audio") ? "audio" : "video";
       const probe = document.createElement(kind === "audio" ? "audio" : "video");
       probe.preload = "auto";
@@ -74,8 +81,19 @@ export default function MediaBin() {
     const { convertFileSrc } = await import("@tauri-apps/api/core");
     for (const path of paths) {
       const name = path.split(/[\\/]/).pop() ?? path;
-      const kind = /\.(mp3|wav|m4a|aac|ogg)$/i.test(name) ? "audio" : "video";
+      const kind = /\.(mp3|wav|m4a|aac|ogg)$/i.test(name)
+        ? "audio"
+        : /\.(png|jpe?g|webp|bmp)$/i.test(name)
+          ? "image"
+          : "video";
       const id = newId("media");
+      const url = convertFileSrc(path);
+      if (kind === "image") {
+        // Still image: 5s overlay by default; the file itself is the thumb.
+        addMedia({ id, name, url, duration: 5, kind, path });
+        setMediaThumb(id, url);
+        continue;
+      }
       let duration = 0;
       try {
         const info = await tauriInvoke<{ duration: number }>("probe_media", { path });
@@ -83,7 +101,6 @@ export default function MediaBin() {
       } catch {
         /* probing is best-effort; duration refines on export */
       }
-      const url = convertFileSrc(path);
       addMedia({ id, name, url, duration, kind, path });
       if (kind === "video") {
         // Generate a low-res proxy in the background for smooth scrubbing
@@ -112,12 +129,12 @@ export default function MediaBin() {
     <div className="dock-panel">
       <div className="panel-title">Media</div>
       <button className="primary" onClick={onImport}>
-        + Import video / audio
+        + Import video / audio / image
       </button>
       <input
         ref={fileRef}
         type="file"
-        accept="video/*,audio/*"
+        accept="video/*,audio/*,image/*"
         multiple
         hidden
         onChange={(e) => importBlobs(e.target.files)}
@@ -127,7 +144,12 @@ export default function MediaBin() {
       )}
       <div className="lib-grid">
         {media.map((m) => (
-          <button key={m.id} className="lib-card" onClick={() => addToTimeline(m.id)} title={m.name}>
+          <button
+            key={m.id}
+            className="lib-card"
+            onClick={() => (m.kind === "image" ? addOverlayClip(m.id) : addToTimeline(m.id))}
+            title={m.kind === "image" ? `${m.name} — click to add as overlay` : m.name}
+          >
             <span className="lib-tile">
               {m.thumb ? (
                 <img src={m.thumb} alt="" />
@@ -143,11 +165,11 @@ export default function MediaBin() {
           </button>
         ))}
       </div>
-      {media.some((m) => m.kind === "video") && (
+      {media.some((m) => m.kind === "video" || m.kind === "image") && (
         <div className="field">
           <span>Picture in picture</span>
           <div className="row" style={{ flexWrap: "wrap" }}>
-            {media.filter((m) => m.kind === "video").map((m) => (
+            {media.filter((m) => m.kind === "video" || m.kind === "image").map((m) => (
               <button key={m.id} className="chip" title={`Add ${m.name} as an overlay at the playhead`}
                 onClick={() => addOverlayClip(m.id)}>
                 📺 {m.name.length > 14 ? `${m.name.slice(0, 14)}…` : m.name}

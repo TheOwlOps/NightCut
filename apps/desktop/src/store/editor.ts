@@ -22,7 +22,7 @@ export interface MediaItem {
   name: string;
   url: string; // object URL (browser) or asset URL (desktop) for preview
   duration: number;
-  kind: "video" | "audio";
+  kind: "video" | "audio" | "image";
   /** Real filesystem path in the desktop build (native import). Needed
    * for probing, proxies and auto-captions; absent for browser blobs. */
   path?: string;
@@ -38,6 +38,16 @@ interface Selection {
   clipId: string;
 }
 
+/** A plugin manifest from a plugin.json on disk (desktop) — declarative
+ * content packs: effect stacks + text presets. Nothing is executed. */
+export interface PluginManifest {
+  name: string;
+  description?: string;
+  _dir?: string;
+  effects?: { label: string; effect: Effect }[];
+  textPresets?: { label: string; text: string; fontSize?: number; color?: string; bg?: string }[];
+}
+
 interface EditorState {
   project: Project;
   media: MediaItem[];
@@ -47,9 +57,11 @@ interface EditorState {
   zoom: number; // px per second
   past: Project[];
   future: Project[];
+  plugins: PluginManifest[];
+  loadPlugins: () => Promise<void>;
   addMedia: (item: MediaItem) => void;
   addToTimeline: (mediaId: string) => void;
-  addTextClip: (text: string, style?: { fontSize: number; color: string }) => void;
+  addTextClip: (text: string, style?: { fontSize: number; color: string; bg?: string; shadow?: boolean }) => void;
   addCaptionsFromSrt: (content: string) => number;
   addCaptionCues: (cues: { start: number; end: number; text: string }[], offset: number) => number;
   addAudioAtPlayhead: (mediaId: string) => void;
@@ -95,6 +107,7 @@ interface EditorState {
   deleteSelected: () => void;
   updateSelectedText: (text: string) => void;
   addEffect: (type: Effect["type"]) => void;
+  addEffectInstance: (effect: Effect) => void;
   removeEffect: (index: number) => void;
   updateEffect: (index: number, effect: Effect) => void;
   setCanvas: (preset: "9:16" | "16:9" | "1:1" | { w: number; h: number }) => void;
@@ -117,6 +130,16 @@ export const useEditor = create<EditorState>((set, get) => ({
   zoom: 48,
   past: [],
   future: [],
+  plugins: [],
+  loadPlugins: async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const raw = await invoke<string>("list_plugins");
+      set({ plugins: JSON.parse(raw) as PluginManifest[] });
+    } catch {
+      /* browser build or no plugin folders: the panel explains */
+    }
+  },
 
   addMedia: (item) => {
     set((s) => ({ media: [...s.media, item] }));
@@ -159,6 +182,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       text,
       fontSize: style?.fontSize ?? 64,
       textColor: style?.color ?? "#ffffff",
+      ...(style?.bg ? { textBg: style.bg } : {}),
+      ...(style?.shadow ? { textShadow: true } : {}),
     };
     const next = structuredClone(s.project);
     next.tracks.find((t) => t.id === "track-text")!.clips.push(clip);
@@ -408,6 +433,18 @@ export const useEditor = create<EditorState>((set, get) => ({
     set(withHistory(s, next));
   },
 
+  addEffectInstance: (effect) => {
+    const s = get();
+    if (!s.selected) return;
+    const next = structuredClone(s.project);
+    const clip = next.tracks
+      .find((t) => t.id === s.selected!.trackId)
+      ?.clips.find((c) => c.id === s.selected!.clipId);
+    if (!clip) return;
+    clip.effects = [...(clip.effects ?? []), effect];
+    set(withHistory(s, next));
+  },
+
   removeEffect: (index) => {
     const s = get();
     if (!s.selected) return;
@@ -492,7 +529,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   addOverlayClip: (mediaId) => {
     const s = get();
     const item = s.media.find((m) => m.id === mediaId);
-    if (!item || item.kind !== "video") return;
+    if (!item || (item.kind !== "video" && item.kind !== "image")) return;
     const next = structuredClone(s.project);
     let track = next.tracks.find((t) => t.id === "track-overlay");
     if (!track) {

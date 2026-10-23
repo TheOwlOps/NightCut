@@ -101,30 +101,35 @@ export default function Preview() {
         ) : (
           <div className="preview-empty">NightCut</div>
         )}
-        {activeOverlay && overlayMedia && (
-          <video
-            src={overlayMedia.url}
-            muted
-            playsInline
-            ref={(el) => {
-              if (el && activeOverlay) {
-                const t = activeOverlay.inSec + (playhead - activeOverlay.timelineStart) * activeOverlay.speed;
-                if (Math.abs(el.currentTime - t) > 0.4) el.currentTime = t;
-                if (playing) void el.play().catch(() => {});
-                else el.pause();
-              }
-            }}
-            style={{
-              position: "absolute",
-              width: `${(activeOverlay.overlayScale ?? 0.35) * 100}%`,
-              left: `${(activeOverlay.overlayX ?? 0.9) * (1 - (activeOverlay.overlayScale ?? 0.35)) * 100}%`,
-              top: `${(activeOverlay.overlayY ?? 0.9) * (1 - (activeOverlay.overlayScale ?? 0.35) * (height / Math.max(1, width))) * 100}%`,
-              borderRadius: 6,
-              boxShadow: "0 4px 18px rgba(0,0,0,0.5)",
-              pointerEvents: "none",
-            }}
-          />
-        )}
+        {activeOverlay && overlayMedia && (() => {
+          const overlayStyle = {
+            position: "absolute" as const,
+            width: `${(activeOverlay.overlayScale ?? 0.35) * 100}%`,
+            left: `${(activeOverlay.overlayX ?? 0.9) * (1 - (activeOverlay.overlayScale ?? 0.35)) * 100}%`,
+            top: `${(activeOverlay.overlayY ?? 0.9) * (1 - (activeOverlay.overlayScale ?? 0.35) * (height / Math.max(1, width))) * 100}%`,
+            borderRadius: 6,
+            boxShadow: "0 4px 18px rgba(0,0,0,0.5)",
+            pointerEvents: "none" as const,
+          };
+          return overlayMedia.kind === "image" ? (
+            <img src={overlayMedia.url} alt="" style={overlayStyle} />
+          ) : (
+            <video
+              src={overlayMedia.url}
+              muted
+              playsInline
+              ref={(el) => {
+                if (el && activeOverlay) {
+                  const t = activeOverlay.inSec + (playhead - activeOverlay.timelineStart) * activeOverlay.speed;
+                  if (Math.abs(el.currentTime - t) > 0.4) el.currentTime = t;
+                  if (playing) void el.play().catch(() => {});
+                  else el.pause();
+                }
+              }}
+              style={overlayStyle}
+            />
+          );
+        })()}
         {activeText && activeText.length > 0 && (
           <div className="preview-text-stack">
             {activeText.map((c) => (

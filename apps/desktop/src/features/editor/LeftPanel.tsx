@@ -1,7 +1,7 @@
-import { useRef, useState, ReactNode } from "react";
+import { useEffect, useRef, useState, ReactNode } from "react";
 import {
   IconMedia, IconText, IconEffects, IconFilters, IconTransitions,
-  IconAudio, IconCaptions, IconTemplates, IconStickers,
+  IconAudio, IconCaptions, IconTemplates, IconElements, IconBrand, IconPlugins,
 } from "./Icons";
 import MediaBin, { isTauri } from "./MediaBin";
 import { useEditor } from "../../store/editor";
@@ -28,26 +28,211 @@ const EFFECT_ICONS: Partial<Record<Effect["type"], string>> = {
 };
 
 const STICKERS = ["🔥", "❤️", "😂", "🎉", "⭐", "👍", "💯", "🚀", "🎬", "🎵", "⚡", "🌙", "✅", "❌", "➡️", "💥"];
+/** Shape glyphs covered by the export font (DejaVu): they ride the text
+ * track like stickers and render identically in preview and export. */
+const SHAPES = ["●", "■", "▲", "◆", "★", "♥", "⬟", "⬢", "➜", "➤", "✚", "✖", "─", "│", "↗", "↘"];
+const BADGES = [
+  { text: "NEW", bg: "#e8890c" },
+  { text: "SALE", bg: "#d43a2f" },
+  { text: "-50%", bg: "#d43a2f" },
+  { text: "HOT", bg: "#8b5cf6" },
+  { text: "LIVE", bg: "#d43a2f" },
+  { text: "4K", bg: "#17171c" },
+];
 
-function StickersPanel() {
+/** CapCut's Elements tab, local edition: shapes, badges and stickers.
+ * Everything here drops a real text-track clip — no placeholders. */
+function ElementsPanel() {
   const { addTextClip } = useEditor();
   return (
     <div className="dock-panel">
-      <div className="panel-title">Stickers</div>
-      <p className="hint">Stickers ride the text track (huge emoji glyphs) — they preview and export like text.</p>
-      <div className="lib-grid">
-        {STICKERS.map((s) => (
-          <button key={s} className="lib-card" onClick={() => addTextClip(s, { fontSize: 160, color: "#ffffff" })}>
-            <span className="lib-tile" style={{ background: "#17171c", fontSize: 30 }}>{s}</span>
-            <span className="lib-name">Sticker</span>
-          </button>
-        ))}
+      <div className="panel-title">Elements</div>
+      <div className="field">
+        <span>Shapes</span>
+        <div className="lib-grid">
+          {SHAPES.map((s) => (
+            <button key={s} className="lib-card" onClick={() => addTextClip(s, { fontSize: 140, color: "#ffffff" })}>
+              <span className="lib-tile" style={{ background: "#17171c", fontSize: 26, color: "#fff" }}>{s}</span>
+              <span className="lib-name">Shape</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="field">
+        <span>Badges</span>
+        <div className="lib-grid">
+          {BADGES.map((b) => (
+            <button
+              key={b.text}
+              className="lib-card"
+              onClick={() => addTextClip(b.text, { fontSize: 56, color: "#ffffff", bg: b.bg, shadow: true })}
+            >
+              <span className="lib-tile" style={{ background: "#17171c" }}>
+                <span style={{ background: b.bg, color: "#fff", borderRadius: 6, padding: "2px 8px", fontWeight: 800, fontSize: 13 }}>
+                  {b.text}
+                </span>
+              </span>
+              <span className="lib-name">{b.text}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="field">
+        <span>Stickers</span>
+        <div className="lib-grid">
+          {STICKERS.map((s) => (
+            <button key={s} className="lib-card" onClick={() => addTextClip(s, { fontSize: 160, color: "#ffffff" })}>
+              <span className="lib-tile" style={{ background: "#17171c", fontSize: 30 }}>{s}</span>
+              <span className="lib-name">Sticker</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="hint">Elements ride the text track — restyle color/size in the Inspector, position via keyframes.</p>
+    </div>
+  );
+}
+
+const BRAND_KEY = "nightcut-brand-kit";
+interface BrandKit {
+  colors: string[];
+  fontSize: number;
+}
+const defaultBrand = (): BrandKit => ({
+  colors: ["#00e0bd", "#f5c518", "#ffffff", "#e8890c", "#d43a2f", "#17171c"],
+  fontSize: 72,
+});
+
+function loadBrand(): BrandKit {
+  try {
+    const raw = localStorage.getItem(BRAND_KEY);
+    if (raw) return { ...defaultBrand(), ...(JSON.parse(raw) as BrandKit) };
+  } catch { /* fresh start */ }
+  return defaultBrand();
+}
+
+/** CapCut's Brand Kit, local edition: your palette + logo, applied to
+ * real clips. The kit is stored on this machine (localStorage +
+ * imported media), never uploaded anywhere. */
+function BrandKitPanel() {
+  const { media, addOverlayClip, selected, setSelectedTextStyle, addTextClip, project } = useEditor();
+  const [kit, setKit] = useState<BrandKit>(loadBrand);
+  const logos = media.filter((m) => m.kind === "image");
+  const save = (next: BrandKit) => {
+    setKit(next);
+    try { localStorage.setItem(BRAND_KEY, JSON.stringify(next)); } catch { /* private mode */ }
+  };
+  return (
+    <div className="dock-panel">
+      <div className="panel-title">Brand kit</div>
+      <div className="field">
+        <span>Brand colors — click a swatch to paint the selected text</span>
+        <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+          {kit.colors.map((c, i) => (
+            <span key={i} style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+              <button
+                className="swatch"
+                style={{ background: c, width: 34, height: 34 }}
+                title={selected ? `Apply ${c} to the selected text clip` : "Select a text clip first"}
+                onClick={() => setSelectedTextStyle({ textColor: c })}
+              />
+              <input
+                type="color"
+                value={c}
+                style={{ width: 34, height: 18, padding: 0, border: "none", background: "transparent" }}
+                onChange={(e) => {
+                  const next = { ...kit, colors: kit.colors.map((x, j) => (j === i ? e.target.value : x)) };
+                  save(next);
+                }}
+              />
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="field">
+        <span>Brand headline (your colors, one click)</span>
+        <button
+          className="primary"
+          onClick={() => addTextClip("Your headline", { fontSize: kit.fontSize, color: kit.colors[0], shadow: true })}
+        >
+          Add headline in brand color
+        </button>
+        <label className="row">
+          <span className="hint">Size</span>
+          <input
+            type="range" min={32} max={160} value={kit.fontSize}
+            onChange={(e) => save({ ...kit, fontSize: Number(e.target.value) })}
+          />
+          <span className="hint">{kit.fontSize}px</span>
+        </label>
+      </div>
+      <div className="field">
+        <span>Logo watermark</span>
+        {logos.length === 0 ? (
+          <p className="hint">
+            Import a logo image in the Media tab first — it lands here automatically.
+            Project “{project.name ?? "Untitled project"}” will carry it as an overlay.
+          </p>
+        ) : (
+          <div className="row" style={{ flexWrap: "wrap" }}>
+            {logos.map((m) => (
+              <button key={m.id} className="chip" onClick={() => addOverlayClip(m.id)} title={`Watermark with ${m.name} at the playhead`}>
+                🖼 {m.name.length > 16 ? `${m.name.slice(0, 16)}…` : m.name}
+              </button>
+            ))}
+          </div>
+        )}
+        <p className="hint">The logo rides the PiP track — resize/reposition in the Inspector; stills loop in export like video.</p>
       </div>
     </div>
   );
 }
 
-type Tab = "media" | "text" | "effects" | "filters" | "transitions" | "audio" | "captions" | "templates" | "stickers";
+/** CapCut's Plugins tab, local edition: declarative content packs from
+ * plugin.json folders (desktop). Effects and text presets apply through
+ * the normal editing paths — plugins are data, never code. */
+function PluginsPanel() {
+  const { plugins, loadPlugins, addEffectInstance, addTextClip } = useEditor();
+  useEffect(() => { void loadPlugins(); }, [loadPlugins]);
+  return (
+    <div className="dock-panel">
+      <div className="panel-title">Plugins</div>
+      {plugins.length === 0 ? (
+        <p className="hint">
+          No plugins found. In the desktop app, drop a folder with a plugin.json into
+          ~/.nightcut/plugins (or set NIGHTCUT_PLUGINS_DIR) — the repo ships an example
+          pack under plugins/. A plugin is pure data: effect stacks and text presets.
+        </p>
+      ) : (
+        plugins.map((pl) => (
+          <div key={pl.name} className="field">
+            <span>{pl.name}</span>
+            {pl.description && <p className="hint">{pl.description}</p>}
+            {(pl.effects ?? []).map((e) => (
+              <button key={e.label} className="preset-card" onClick={() => addEffectInstance(e.effect)}>
+                <strong>{e.label}</strong>
+                <span className="hint">Apply effect to the selected clip</span>
+              </button>
+            ))}
+            {(pl.textPresets ?? []).map((t) => (
+              <button
+                key={t.label}
+                className="preset-card"
+                onClick={() => addTextClip(t.text, { fontSize: t.fontSize ?? 64, color: t.color ?? "#ffffff", bg: t.bg })}
+              >
+                <strong>{t.label}</strong>
+                <span className="hint">Add text preset at the playhead</span>
+              </button>
+            ))}
+          </div>
+        ))
+      )}
+      <button onClick={() => void loadPlugins()}>↻ Rescan plugin folders</button>
+    </div>
+  );
+}
+
+type Tab = "media" | "text" | "effects" | "filters" | "transitions" | "audio" | "captions" | "templates" | "elements" | "brandkit" | "plugins";
 
 const TABS: { id: Tab; icon: ReactNode; label: string }[] = [
   { id: "media", icon: <IconMedia />, label: "Media" },
@@ -58,7 +243,9 @@ const TABS: { id: Tab; icon: ReactNode; label: string }[] = [
   { id: "audio", icon: <IconAudio />, label: "Audio" },
   { id: "captions", icon: <IconCaptions />, label: "Captions" },
   { id: "templates", icon: <IconTemplates />, label: "Templates" },
-  { id: "stickers", icon: <IconStickers />, label: "Stickers" },
+  { id: "elements", icon: <IconElements />, label: "Elements" },
+  { id: "brandkit", icon: <IconBrand />, label: "Brand kit" },
+  { id: "plugins", icon: <IconPlugins />, label: "Plugins" },
 ];
 
 /**
@@ -90,7 +277,9 @@ export default function LeftPanel() {
         {tab === "audio" && <AudioPanel />}
         {tab === "captions" && <CaptionsPanel />}
         {tab === "templates" && <TemplatesPanel />}
-        {tab === "stickers" && <StickersPanel />}
+        {tab === "elements" && <ElementsPanel />}
+        {tab === "brandkit" && <BrandKitPanel />}
+        {tab === "plugins" && <PluginsPanel />}
       </div>
     </div>
   );
@@ -153,8 +342,11 @@ function TextPanel() {
 
 function EffectsPanel() {
   const addEffect = useEditor((s) => s.addEffect);
+  const addEffectInstance = useEditor((s) => s.addEffectInstance);
   const selected = useEditor((s) => s.selected);
+  const plugins = useEditor((s) => s.plugins);
   const types = Object.keys(EFFECT_LABELS) as Effect["type"][];
+  const pluginEffects = plugins.flatMap((pl) => (pl.effects ?? []).map((e) => ({ ...e, plugin: pl.name })));
   return (
     <div className="dock-panel">
       <div className="panel-title">Effects</div>
@@ -170,6 +362,17 @@ function EffectsPanel() {
         ))}
       </div>
       <p className="hint">Applied effects appear in the Inspector on the right, with sliders.</p>
+      {pluginEffects.length > 0 && (
+        <div className="field">
+          <span>From plugins</span>
+          {pluginEffects.map((e) => (
+            <button key={`${e.plugin}:${e.label}`} className="preset-card" disabled={!selected} onClick={() => addEffectInstance(e.effect)}>
+              <strong>{e.label}</strong>
+              <span className="hint">{e.plugin}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

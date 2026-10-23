@@ -139,7 +139,7 @@ input[type="color"] { cursor: pointer; }
 .topbar button.primary { background: var(--grad-accent); border-radius: 999px; padding: 8px 26px; font-size: 13.5px; }
 .topbar button.primary:hover:not(:disabled) { background: var(--grad-accent); }
 
-.workspace { flex: 1; display: grid; grid-template-columns: 356px 1fr 296px; min-height: 0; }
+.workspace { flex: 1; display: grid; grid-template-columns: 356px 1fr 296px; grid-template-rows: minmax(0, 1fr); min-height: 0; }
 
 /* ---- left dock: pill rail + library ---- */
 .leftpanel {
@@ -147,7 +147,7 @@ input[type="color"] { cursor: pointer; }
   background: linear-gradient(180deg, var(--bg-panel-2), var(--bg-panel));
   border-right: 1px solid var(--border);
 }
-.rail { display: flex; flex-direction: column; gap: 4px; padding: 10px 6px; border-right: 1px solid var(--border); width: 76px; flex: none; }
+.rail { display: flex; flex-direction: column; gap: 4px; padding: 10px 6px; border-right: 1px solid var(--border); width: 76px; flex: none; overflow-y: auto; overflow-x: hidden; min-height: 0; scrollbar-width: thin; }
 .project-name {
   background: transparent; border: 1px solid transparent; border-radius: 8px;
   color: var(--text); font-size: 13.5px; font-weight: 600; padding: 5px 9px;

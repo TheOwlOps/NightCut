@@ -326,6 +326,14 @@ pub fn effect_audio_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
 }
 
 /// Escape a string for use inside an FFmpeg drawtext `text='...'`.
+/// Still-image sources that must be looped when used as overlay inputs.
+pub fn is_still_image(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+        Some("png" | "jpg" | "jpeg" | "webp" | "bmp")
+    )
+}
+
 pub fn escape_drawtext(text: &str) -> String {
     text.replace('\\', "\\\\")
         .replace('\'', "\\'")
@@ -398,6 +406,12 @@ pub fn build_ffmpeg_args_stabilized(
     for clip in &overlay_clips {
         let path = sources.get(&clip.id)
             .ok_or_else(|| ExportError::UnresolvedSource(clip.id.clone()))?;
+        // Still images (logo watermarks, Elements art) loop into a video
+        // stream so the overlay chain's trim/setpts work unchanged.
+        if is_still_image(path) {
+            args.push("-loop".into());
+            args.push("1".into());
+        }
         args.push("-i".into());
         args.push(path.display().to_string());
     }
@@ -1204,6 +1218,82 @@ mod tests {
         assert!(r1 > 120 && g1 < 110, "base area should be red, got r={r1} g={g1}");
         let (r2, g2, _) = px(280, 200);
         assert!(g2 > 90 && r2 < 130, "pip area should be green, got r={r2} g={g2}");
+    }
+
+    #[test]
+    fn image_overlay_input_is_looped() {
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        p.tracks[0].clips = vec![Clip::new("c1", "base.mp4", 0.0, 2.0, 0.0)];
+        let mut oc = Clip::new("ov1", "logo.png", 0.0, 2.0, 0.0);
+        oc.overlay_scale = Some(0.3);
+        p.tracks.insert(1, {
+            let mut t = editor_core::Track::new("track-overlay", TrackKind::Video);
+            t.clips = vec![oc];
+            t
+        });
+        let sources: BTreeMap<String, PathBuf> = [
+            ("c1".to_string(), PathBuf::from("/media/base.mp4")),
+            ("ov1".to_string(), PathBuf::from("/media/logo.png")),
+        ].into_iter().collect();
+        let args = build_ffmpeg_args(&p, &sources, Path::new("/tmp/out.mp4"), &ExportSettings::default()).unwrap();
+        let joined = args.join(" ");
+        assert!(joined.contains("-loop 1 -i /media/logo.png"), "{joined}");
+        assert!(!joined.contains("-loop 1 -i /media/base.mp4"), "{joined}");
+    }
+
+    /// Live render: a still PNG (logo) watermarked over a red base.
+    #[test]
+    #[ignore]
+    fn renders_image_overlay() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("base-red.mp4");
+        if !base.exists() {
+            let status = Command::new("ffmpeg")
+                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=red:duration=2:size=320x240:rate=30",
+                       "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                       "-c:v", "libx264", "-c:a", "aac", "-shortest"])
+                .arg(&base).status().unwrap();
+            assert!(status.success());
+        }
+        let logo = dir.join("logo-white.png");
+        if !logo.exists() {
+            let status = Command::new("ffmpeg")
+                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=white:size=80x80", "-frames:v", "1"])
+                .arg(&logo).status().unwrap();
+            assert!(status.success());
+        }
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        p.tracks[0].clips = vec![Clip::new("c1", "base-red.mp4", 0.0, 2.0, 0.0)];
+        let mut oc = Clip::new("ov1", "logo-white.png", 0.0, 2.0, 0.0);
+        oc.overlay_scale = Some(0.25);
+        oc.overlay_x = Some(1.0);
+        oc.overlay_y = Some(1.0);
+        p.tracks.insert(1, {
+            let mut t = editor_core::Track::new("track-overlay", TrackKind::Video);
+            t.clips = vec![oc];
+            t
+        });
+        let sources: BTreeMap<String, PathBuf> =
+            [("c1".to_string(), base), ("ov1".to_string(), logo)].into_iter().collect();
+        let out = dir.join("image-overlay.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).expect("image overlay render");
+        let raw = Command::new("ffmpeg")
+            .args(["-v", "error", "-ss", "1", "-i"])
+            .arg(&out)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output().unwrap();
+        assert!(raw.status.success());
+        let px = |x: usize, y: usize| {
+            let i = (y * 320 + x) * 3;
+            (raw.stdout[i], raw.stdout[i + 1], raw.stdout[i + 2])
+        };
+        let (r1, g1, _) = px(40, 40);
+        assert!(r1 > 120 && g1 < 110, "base area should be red, got r={r1} g={g1}");
+        let (r2, g2, b2) = px(290, 215);
+        assert!(r2 > 180 && g2 > 180 && b2 > 180, "logo area should be white, got {r2},{g2},{b2}");
     }
 
     #[test]

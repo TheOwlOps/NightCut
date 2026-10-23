@@ -193,6 +193,25 @@ export const IconFilm = ({ size = 16 }: { size?: number }) => (
     <path d="M7.5 4.5v15M16.5 4.5v15M3 9h4.5M3 15h4.5M16.5 9H21M16.5 15H21" />
   </I>
 );
+export const IconElements = ({ size }: { size?: number }) => (
+  <I size={size}>
+    <circle cx="8" cy="8" r="3.5" />
+    <rect x="13" y="12.5" width="7.5" height="7.5" rx="1" />
+    <path d="M16.5 3.5l3 5h-6z" />
+    <path d="M4 20l2.5-4.5L9 20z" />
+  </I>
+);
+export const IconBrand = ({ size }: { size?: number }) => (
+  <I size={size}>
+    <path d="M12 3.5s6 6.6 6 10.7a6 6 0 0 1-12 0C6 10.1 12 3.5 12 3.5z" />
+    <path d="M9.2 13.8a2.9 2.9 0 0 0 2 3.4" />
+  </I>
+);
+export const IconPlugins = ({ size }: { size?: number }) => (
+  <I size={size}>
+    <path d="M9 3.5h6v3a2.2 2.2 0 1 0 4 0h1.5v6H18a2.2 2.2 0 1 0 0 4h2.5v4H14v-2.5a2.2 2.2 0 1 0-4 0V20H3.5v-6H6a2.2 2.2 0 1 0 0-4H3.5V3.5H9z" />
+  </I>
+);
 export const IconPlus = ({ size = 16 }: { size?: number }) => (
   <I size={size}>
     <path d="M12 5v14M5 12h14" />

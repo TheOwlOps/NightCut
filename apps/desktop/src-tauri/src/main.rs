@@ -45,6 +45,50 @@ fn detect_beats(path: String) -> Result<String, String> {
     Ok(serde_json::json!({ "beats": beats, "bpm": bpm }).to_string())
 }
 
+/// Plugins: scan plugin folders for plugin.json manifests and return
+/// them as a JSON array string. Search order: $NIGHTCUT_PLUGINS_DIR,
+/// <exe_dir>/plugins, ~/.nightcut/plugins. A manifest is
+/// { name, description, effects: [{label, effect}], textPresets:
+/// [{label, text, fontSize, color, bg}] } — contents apply through the
+/// normal effect/text paths, nothing is executed.
+#[tauri::command]
+fn list_plugins() -> Result<String, String> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(d) = std::env::var("NIGHTCUT_PLUGINS_DIR") {
+        dirs.push(d.into());
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            dirs.push(parent.join("plugins"));
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(std::path::PathBuf::from(home).join(".nightcut").join("plugins"));
+    }
+    let mut found: Vec<serde_json::Value> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for dir in &dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for entry in entries.flatten() {
+            let manifest_path = entry.path().join("plugin.json");
+            let Ok(text) = std::fs::read_to_string(&manifest_path) else { continue };
+            let Ok(mut manifest) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+            let name = manifest.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if name.is_empty() || seen.contains(&name) {
+                continue;
+            }
+            seen.push(name);
+            if let Some(obj) = manifest.as_object_mut() {
+                obj.insert("_dir".into(), serde_json::Value::String(
+                    entry.path().display().to_string(),
+                ));
+            }
+            found.push(manifest);
+        }
+    }
+    Ok(serde_json::Value::Array(found).to_string())
+}
+
 /// Scene detection: { scenes: number[] } as JSON.
 #[tauri::command]
 fn detect_scenes(path: String, threshold: f64) -> Result<String, String> {
@@ -146,7 +190,7 @@ fn export_video(
 async fn pick_media_files() -> Vec<String> {
     let picked = tauri::async_runtime::spawn_blocking(|| {
         rfd::FileDialog::new()
-            .add_filter("Media", &["mp4", "mov", "mkv", "webm", "mp3", "wav", "m4a", "aac", "ogg"])
+            .add_filter("Media", &["mp4", "mov", "mkv", "webm", "mp3", "wav", "m4a", "aac", "ogg", "png", "jpg", "jpeg", "webp", "bmp"])
             .pick_files()
     })
     .await
@@ -217,7 +261,8 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             probe_media, make_proxy, waveform, export_video, pick_media_files, auto_captions,
-            text_to_speech, detect_beats, detect_scenes, detect_silences, track_motion, remove_background
+            text_to_speech, detect_beats, detect_scenes, detect_silences, track_motion, remove_background,
+            list_plugins
         ])
         .run(tauri::generate_context!())
         .expect("error while running NightCut");
