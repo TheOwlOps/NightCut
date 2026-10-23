@@ -172,8 +172,88 @@ pub fn effect_video_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
                 sp[0], sp[1], sp[2], mp[0], mp[1], mp[2], hp[0], hp[1], hp[2]
             )]
         }
+        Effect::HueRotate { degrees } => {
+            vec![format!("hue=h={:.1}", degrees.clamp(-180.0, 180.0))]
+        }
+        Effect::Exposure { ev } => {
+            vec![format!("exposure=exposure={:.2}:black=0.02", ev.clamp(-3.0, 3.0))]
+        }
+        Effect::Posterize { levels } => {
+            let l = levels.clamp(2, 16) as f64;
+            let step = 256.0 / l;
+            let expr = format!("trunc(val/{step:.1})*{step:.1}+{:.1}", step / 2.0);
+            vec![format!("lutrgb=r='{expr}':g='{expr}':b='{expr}'")]
+        }
+        Effect::Solarize => {
+            let e = "if(gt(val,128),255-val,val)";
+            vec![format!("lutrgb=r='{e}':g='{e}':b='{e}'")]
+        }
+        Effect::Sketch => vec![
+            "format=gray".to_string(),
+            "edgedetect=low=0.08:high=0.35".to_string(),
+            "negate".to_string(),
+        ],
+        Effect::NeonEdges => vec!["edgedetect=mode=colormix:low=0.08:high=0.45".to_string()],
+        Effect::Pixelate { size } => {
+            let s = size.clamp(2, 64);
+            vec![format!(
+                "scale=iw/{s}:ih/{s}:flags=neighbor,scale=iw*{s}:ih*{s}:flags=neighbor"
+            )]
+        }
+        Effect::FilmGrain { strength } => {
+            vec![format!("noise=alls={}:allf=t+u", strength.min(100))]
+        }
+        Effect::RgbSplit { amount } => {
+            let a = amount.min(30) as i32;
+            vec![format!("rgbashift=rh={a}:bh={}", -a)]
+        }
+        Effect::LensDistort { k1 } => {
+            vec![format!("lenscorrection=k1={:.3}:k2=0", k1.clamp(-1.0, 1.0))]
+        }
+        Effect::Rotate { degrees } => {
+            vec![format!(
+                "rotate={:.4}*PI/180:fillcolor=black",
+                degrees.clamp(-180.0, 180.0)
+            )]
+        }
+        Effect::MotionBlur { frames } => {
+            vec![format!("tmix=frames={}", frames.clamp(2, 10))]
+        }
+        Effect::Scanlines => {
+            vec!["drawgrid=width=iw:height=4:thickness=2:color=black@0.30".to_string()]
+        }
+        Effect::NightVision => vec![
+            "hue=h=85:s=1.3".to_string(),
+            "eq=brightness=0.07:contrast=1.12".to_string(),
+            "noise=alls=10:allf=t".to_string(),
+        ],
+        Effect::Xray => vec![
+            "format=gray".to_string(),
+            "negate".to_string(),
+            "eq=contrast=1.30:brightness=0.05".to_string(),
+        ],
+        Effect::Cartoon => {
+            let expr = "trunc(val/51)*51+25";
+            vec![
+                "bilateral=sigmaS=3:sigmaR=0.30".to_string(),
+                format!("lutrgb=r='{expr}':g='{expr}':b='{expr}'"),
+            ]
+        }
+        Effect::Clarity { amount } => {
+            vec![format!("cas={:.2}", amount.clamp(0.0, 1.0))]
+        }
         // Audio-only effects: no video filters.
-        Effect::EnhanceVoice { .. } | Effect::VocalIsolate { .. } => Vec::new(),
+        Effect::EnhanceVoice { .. }
+        | Effect::VocalIsolate { .. }
+        | Effect::Echo { .. }
+        | Effect::Reverb
+        | Effect::Chorus
+        | Effect::Distortion { .. }
+        | Effect::Telephone
+        | Effect::BassBoost { .. }
+        | Effect::TrebleBoost { .. }
+        | Effect::Compressor { .. }
+        | Effect::Underwater => Vec::new(),
     }
 }
 
@@ -349,6 +429,43 @@ pub fn effect_audio_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
         Effect::Loudnorm { target_lufs } => {
             vec![format!("loudnorm=I={:.1}:TP=-1.5:LRA=11", target_lufs.clamp(-24.0, -5.0))]
         }
+        Effect::Echo { delay_ms, decay } => {
+            vec![format!(
+                "aecho=0.8:0.85:{}:{:.2}",
+                delay_ms.clamp(30, 1000),
+                decay.clamp(0.0, 0.9)
+            )]
+        }
+        Effect::Reverb => {
+            vec!["aecho=0.8:0.85:60|120|240:0.35|0.25|0.15".to_string()]
+        }
+        Effect::Chorus => vec!["chorus=0.7:0.9:55:0.4:0.25:2".to_string()],
+        Effect::Distortion { drive } => {
+            let d = drive.clamp(0.0, 1.0);
+            let bits = (16.0 - d * 12.0).round().max(2.0) as u32;
+            vec![format!("acrusher=bits={bits}:mix={:.2}:aa=1", 0.3 + d * 0.6)]
+        }
+        Effect::Telephone => vec![
+            "highpass=f=400".to_string(),
+            "lowpass=f=3400".to_string(),
+            "equalizer=f=1200:width_type=o:width=2:g=4".to_string(),
+        ],
+        Effect::BassBoost { gain } => {
+            vec![format!("bass=g={:.1}:f=110:width_type=o:width=1", gain.clamp(0.0, 24.0))]
+        }
+        Effect::TrebleBoost { gain } => {
+            vec![format!("treble=g={:.1}:f=3200:width_type=o:width=1", gain.clamp(0.0, 24.0))]
+        }
+        Effect::Compressor { ratio } => {
+            vec![format!(
+                "acompressor=threshold=-18dB:ratio={:.1}:attack=10:release=180:makeup=3dB",
+                ratio.clamp(1.0, 20.0)
+            )]
+        }
+        Effect::Underwater => vec![
+            "lowpass=f=800".to_string(),
+            "chorus=0.6:0.8:80:0.3:0.2:1.5".to_string(),
+        ],
         _ => Vec::new(),
     }
 }
@@ -1262,6 +1379,60 @@ mod tests {
     }
 
     #[test]
+    fn wave19_video_effects_map_to_filters() {
+        let cases: Vec<(Effect, &str)> = vec![
+            (Effect::HueRotate { degrees: 40.0 }, "hue=h=40.0"),
+            (Effect::Exposure { ev: 0.7 }, "exposure=exposure=0.70"),
+            (Effect::Posterize { levels: 5 }, "lutrgb=r='trunc(val/51.2)*51.2+25.6'"),
+            (Effect::Solarize, "if(gt(val,128),255-val,val)"),
+            (Effect::Sketch, "edgedetect=low=0.08:high=0.35"),
+            (Effect::NeonEdges, "edgedetect=mode=colormix"),
+            (Effect::Pixelate { size: 12 }, "scale=iw/12:ih/12:flags=neighbor"),
+            (Effect::FilmGrain { strength: 35 }, "noise=alls=35:allf=t+u"),
+            (Effect::RgbSplit { amount: 6 }, "rgbashift=rh=6:bh=-6"),
+            (Effect::LensDistort { k1: 0.35 }, "lenscorrection=k1=0.350"),
+            (Effect::Rotate { degrees: 8.0 }, "rotate=8.0000*PI/180"),
+            (Effect::MotionBlur { frames: 4 }, "tmix=frames=4"),
+            (Effect::Scanlines, "drawgrid=width=iw:height=4"),
+            (Effect::NightVision, "hue=h=85"),
+            (Effect::Xray, "negate"),
+            (Effect::Cartoon, "bilateral=sigmaS=3"),
+            (Effect::Clarity { amount: 0.6 }, "cas=0.60"),
+        ];
+        for (fx, want) in cases {
+            let v = effect_video_filters(&fx, 3.0);
+            assert!(
+                v.iter().any(|f| f.contains(want)),
+                "{fx:?} should produce a filter containing {want:?}, got {v:?}"
+            );
+            assert!(effect_audio_filters(&fx, 3.0).is_empty(), "{fx:?} is video-only");
+        }
+    }
+
+    #[test]
+    fn wave19_audio_effects_map_to_filters() {
+        let cases: Vec<(Effect, &str)> = vec![
+            (Effect::Echo { delay_ms: 220, decay: 0.45 }, "aecho=0.8:0.85:220:0.45"),
+            (Effect::Reverb, "aecho=0.8:0.85:60|120|240"),
+            (Effect::Chorus, "chorus=0.7:0.9:55"),
+            (Effect::Distortion { drive: 0.5 }, "acrusher=bits=10"),
+            (Effect::Telephone, "lowpass=f=3400"),
+            (Effect::BassBoost { gain: 8.0 }, "bass=g=8.0"),
+            (Effect::TrebleBoost { gain: 8.0 }, "treble=g=8.0"),
+            (Effect::Compressor { ratio: 4.0 }, "acompressor=threshold=-18dB:ratio=4.0"),
+            (Effect::Underwater, "lowpass=f=800"),
+        ];
+        for (fx, want) in cases {
+            let a = effect_audio_filters(&fx, 3.0);
+            assert!(
+                a.iter().any(|f| f.contains(want)),
+                "{fx:?} should produce a filter containing {want:?}, got {a:?}"
+            );
+            assert!(effect_video_filters(&fx, 3.0).is_empty(), "{fx:?} is audio-only");
+        }
+    }
+
+    #[test]
     fn hsl_and_deflicker_map_to_filters() {
         let mut shifts = vec![[0.0; 3]; 8];
         shifts[3] = [20.0, -30.0, 10.0];
@@ -1853,6 +2024,61 @@ mod tests {
         render(&p, &sources, &out, &ExportSettings::default()).expect("voice fx render");
         let probe = media_engine::probe(&out).expect("probe");
         assert!(probe.has_audio, "voice-fx export lost its audio");
+    }
+
+    /// Live render: a stack of Wave 19 effects runs end-to-end, the
+    /// audio chain survives, and X-ray really inverts a white frame.
+    #[test]
+    #[ignore]
+    fn renders_wave19_effects() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let white = dir.join("w19-white.mp4");
+        if !white.exists() {
+            let st = Command::new("ffmpeg")
+                .args(["-y", "-v", "error", "-f", "lavfi", "-i", "color=c=white:s=320x240:d=2:r=30",
+                       "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                       "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+                .arg(&white).status().unwrap();
+            assert!(st.success());
+        }
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        let mut c1 = Clip::new("c1", "w19-white.mp4", 0.0, 2.0, 0.0);
+        c1.effects = vec![
+            Effect::Pixelate { size: 10 },
+            Effect::FilmGrain { strength: 30 },
+            Effect::RgbSplit { amount: 4 },
+            Effect::Scanlines,
+            Effect::MotionBlur { frames: 3 },
+            Effect::Clarity { amount: 0.5 },
+            Effect::Echo { delay_ms: 150, decay: 0.4 },
+            Effect::BassBoost { gain: 6.0 },
+        ];
+        p.tracks[0].clips = vec![c1];
+        let sources = BTreeMap::from([("c1".to_string(), white.clone())]);
+        let out = dir.join("w19-stack.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).expect("wave19 stack render");
+        let probe = media_engine::probe(&out).expect("probe");
+        assert!(probe.has_audio && probe.width == 320);
+
+        // X-ray: white frame must come out dark.
+        let mut p2 = Project::default();
+        p2.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        let mut cx = Clip::new("c1", "w19-white.mp4", 0.0, 1.0, 0.0);
+        cx.effects = vec![Effect::Xray];
+        p2.tracks[0].clips = vec![cx];
+        let out2 = dir.join("w19-xray.mp4");
+        render(&p2, &sources, &out2, &ExportSettings::default()).expect("xray render");
+        let raw = Command::new("ffmpeg")
+            .args(["-v", "error", "-ss", "0.5", "-i"])
+            .arg(&out2)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output().unwrap();
+        assert!(raw.status.success());
+        let px = &raw.stdout[(120 * 320 + 160) * 3..];
+        assert!(px[0] < 90 && px[1] < 90 && px[2] < 90,
+            "xray of white should be dark, got {:?}", &px[..3]);
     }
 
     /// Live render: a compound clip plays its nested sub-project.

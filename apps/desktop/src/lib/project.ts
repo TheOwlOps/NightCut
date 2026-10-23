@@ -41,7 +41,33 @@ export type Effect =
   | { type: "hsl"; shifts: [number, number, number][] }
   | { type: "deflicker"; size: number }
   | { type: "enhance_voice"; strength: number }
-  | { type: "vocal_isolate"; amount: number };
+  | { type: "vocal_isolate"; amount: number }
+  | { type: "hue_rotate"; degrees: number }
+  | { type: "exposure"; ev: number }
+  | { type: "posterize"; levels: number }
+  | { type: "solarize" }
+  | { type: "sketch" }
+  | { type: "neon_edges" }
+  | { type: "pixelate"; size: number }
+  | { type: "film_grain"; strength: number }
+  | { type: "rgb_split"; amount: number }
+  | { type: "lens_distort"; k1: number }
+  | { type: "rotate"; degrees: number }
+  | { type: "motion_blur"; frames: number }
+  | { type: "scanlines" }
+  | { type: "night_vision" }
+  | { type: "xray" }
+  | { type: "cartoon" }
+  | { type: "clarity"; amount: number }
+  | { type: "echo"; delayMs: number; decay: number }
+  | { type: "reverb" }
+  | { type: "chorus" }
+  | { type: "distortion"; drive: number }
+  | { type: "telephone" }
+  | { type: "bass_boost"; gain: number }
+  | { type: "treble_boost"; gain: number }
+  | { type: "compressor"; ratio: number }
+  | { type: "underwater" };
 
 export const EFFECT_LABELS: Record<Effect["type"], string> = {
   adjust: "Brightness / Contrast",
@@ -70,6 +96,57 @@ export const EFFECT_LABELS: Record<Effect["type"], string> = {
   deflicker: "Deflicker",
   enhance_voice: "Enhance voice",
   vocal_isolate: "Vocal isolation",
+  hue_rotate: "Hue rotate",
+  exposure: "Exposure",
+  posterize: "Posterize",
+  solarize: "Solarize",
+  sketch: "Sketch (pencil)",
+  neon_edges: "Neon edges",
+  pixelate: "Pixelate (mosaic)",
+  film_grain: "Film grain",
+  rgb_split: "RGB split (glitch)",
+  lens_distort: "Lens distortion",
+  rotate: "Rotate",
+  motion_blur: "Motion blur",
+  scanlines: "Scanlines (CRT)",
+  night_vision: "Night vision",
+  xray: "X-ray",
+  cartoon: "Cartoon",
+  clarity: "Clarity (CAS sharpen)",
+  echo: "Echo (audio)",
+  reverb: "Reverb (audio)",
+  chorus: "Chorus (audio)",
+  distortion: "Distortion (audio)",
+  telephone: "Telephone voice",
+  bass_boost: "Bass boost",
+  treble_boost: "Treble boost",
+  compressor: "Compressor (audio)",
+  underwater: "Underwater voice",
+};
+
+/** Slider specs for effects whose controls are plain numeric fields —
+ * the Inspector renders these generically. */
+export const EFFECT_PARAM_SPECS: Partial<
+  Record<Effect["type"], { key: string; label: string; min: number; max: number; step: number; round?: boolean; hint?: string }[]>
+> = {
+  hue_rotate: [{ key: "degrees", label: "Degrees", min: -180, max: 180, step: 1, round: true }],
+  exposure: [{ key: "ev", label: "EV stops", min: -3, max: 3, step: 0.1 }],
+  posterize: [{ key: "levels", label: "Levels per channel", min: 2, max: 16, step: 1, round: true }],
+  pixelate: [{ key: "size", label: "Block size (px)", min: 2, max: 64, step: 1, round: true }],
+  film_grain: [{ key: "strength", label: "Strength", min: 0, max: 100, step: 1, round: true }],
+  rgb_split: [{ key: "amount", label: "Shift (px)", min: 0, max: 30, step: 1, round: true }],
+  lens_distort: [{ key: "k1", label: "Distortion (barrel ↔ pincushion)", min: -1, max: 1, step: 0.02 }],
+  rotate: [{ key: "degrees", label: "Degrees", min: -180, max: 180, step: 1, round: true }],
+  motion_blur: [{ key: "frames", label: "Mixed frames", min: 2, max: 10, step: 1, round: true }],
+  clarity: [{ key: "amount", label: "Strength", min: 0, max: 1, step: 0.05 }],
+  echo: [
+    { key: "delayMs", label: "Delay (ms)", min: 30, max: 1000, step: 10, round: true },
+    { key: "decay", label: "Decay", min: 0, max: 0.9, step: 0.05 },
+  ],
+  distortion: [{ key: "drive", label: "Drive", min: 0, max: 1, step: 0.05 }],
+  bass_boost: [{ key: "gain", label: "Gain (dB)", min: 0, max: 24, step: 0.5 }],
+  treble_boost: [{ key: "gain", label: "Gain (dB)", min: 0, max: 24, step: 0.5 }],
+  compressor: [{ key: "ratio", label: "Ratio", min: 1, max: 20, step: 0.5 }],
 };
 
 export interface SpeedPoint {
@@ -262,6 +339,21 @@ export function defaultEffect(type: Effect["type"]): Effect {
     case "deflicker": return { type, size: 5 };
     case "enhance_voice": return { type, strength: 0.6 };
     case "vocal_isolate": return { type, amount: 0.7 };
+    case "hue_rotate": return { type, degrees: 40 };
+    case "exposure": return { type, ev: 0.7 };
+    case "posterize": return { type, levels: 5 };
+    case "pixelate": return { type, size: 12 };
+    case "film_grain": return { type, strength: 35 };
+    case "rgb_split": return { type, amount: 6 };
+    case "lens_distort": return { type, k1: 0.35 };
+    case "rotate": return { type, degrees: 8 };
+    case "motion_blur": return { type, frames: 4 };
+    case "clarity": return { type, amount: 0.6 };
+    case "echo": return { type, delayMs: 220, decay: 0.45 };
+    case "distortion": return { type, drive: 0.5 };
+    case "bass_boost": return { type, gain: 8 };
+    case "treble_boost": return { type, gain: 8 };
+    case "compressor": return { type, ratio: 4 };
     default: return { type } as Effect;
   }
 }
@@ -269,7 +361,7 @@ export function defaultEffect(type: Effect["type"]): Effect {
 /** CSS-filter approximation of a clip's effects, for the live preview. */
 export function cssFilterFor(clip: Clip): { filter: string; transform: string } {
   const parts: string[] = [];
-  let transform = "";
+  const transforms: string[] = [];
   for (const fx of clip.effects ?? []) {
     switch (fx.type) {
       case "adjust":
@@ -283,11 +375,18 @@ export function cssFilterFor(clip: Clip): { filter: string; transform: string } 
         parts.push(fx.kelvin < 6500 ? `sepia(${Math.min(0.5, (6500 - fx.kelvin) / 8000)})` : `hue-rotate(${Math.min(30, (fx.kelvin - 6500) / 150)}deg)`);
         break;
       case "invert": parts.push("invert(1)"); break;
-      case "mirror": transform = "scaleX(-1)"; break;
+      case "mirror": transforms.push("scaleX(-1)"); break;
+      case "hue_rotate": parts.push(`hue-rotate(${fx.degrees}deg)`); break;
+      case "exposure": parts.push(`brightness(${Math.max(0.2, 1 + fx.ev * 0.45)})`); break;
+      case "xray": parts.push("grayscale(1)", "invert(1)", "contrast(1.3)"); break;
+      case "night_vision": parts.push("hue-rotate(65deg)", "saturate(1.6)", "brightness(1.12)"); break;
+      case "cartoon": parts.push("saturate(1.3)", "contrast(1.12)"); break;
+      case "clarity": parts.push("contrast(1.07)"); break;
+      case "rotate": transforms.push(`rotate(${fx.degrees}deg)`); break;
       default: break; // sharpen/vignette/fades have no cheap CSS twin on <video>
     }
   }
-  return { filter: parts.join(" "), transform };
+  return { filter: parts.join(" "), transform: transforms.join(" ") };
 }
 
 /** Preview opacity from fade effects at a local clip time (seconds). */
@@ -402,6 +501,73 @@ export function effectFfmpegFilters(fx: Effect, clipDur: number): { video: strin
       // The .cube LUT is generated by the Rust export engine from the
       // same shifts (this TS mirror runs no file IO).
       return { video: [], audio: [] };
+    case "hue_rotate":
+      return { video: [`hue=h=${fx.degrees.toFixed(1)}`], audio: [] };
+    case "exposure":
+      return { video: [`exposure=exposure=${fx.ev.toFixed(2)}:black=0.02`], audio: [] };
+    case "posterize": {
+      const l = Math.min(16, Math.max(2, fx.levels));
+      const step = 256 / l;
+      const expr = `trunc(val/${step.toFixed(1)})*${step.toFixed(1)}+${(step / 2).toFixed(1)}`;
+      return { video: [`lutrgb=r='${expr}':g='${expr}':b='${expr}'`], audio: [] };
+    }
+    case "solarize": {
+      const e = "if(gt(val,128),255-val,val)";
+      return { video: [`lutrgb=r='${e}':g='${e}':b='${e}'`], audio: [] };
+    }
+    case "sketch":
+      return { video: ["format=gray", "edgedetect=low=0.08:high=0.35", "negate"], audio: [] };
+    case "neon_edges":
+      return { video: ["edgedetect=mode=colormix:low=0.08:high=0.45"], audio: [] };
+    case "pixelate": {
+      const s = Math.min(64, Math.max(2, Math.round(fx.size)));
+      return { video: [`scale=iw/${s}:ih/${s}:flags=neighbor,scale=iw*${s}:ih*${s}:flags=neighbor`], audio: [] };
+    }
+    case "film_grain":
+      return { video: [`noise=alls=${Math.min(100, fx.strength)}:allf=t+u`], audio: [] };
+    case "rgb_split": {
+      const a = Math.min(30, Math.round(fx.amount));
+      return { video: [`rgbashift=rh=${a}:bh=${-a}`], audio: [] };
+    }
+    case "lens_distort":
+      return { video: [`lenscorrection=k1=${fx.k1.toFixed(3)}:k2=0`], audio: [] };
+    case "rotate":
+      return { video: [`rotate=${fx.degrees.toFixed(4)}*PI/180:fillcolor=black`], audio: [] };
+    case "motion_blur":
+      return { video: [`tmix=frames=${Math.min(10, Math.max(2, Math.round(fx.frames)))}`], audio: [] };
+    case "scanlines":
+      return { video: ["drawgrid=width=iw:height=4:thickness=2:color=black@0.30"], audio: [] };
+    case "night_vision":
+      return { video: ["hue=h=85:s=1.3", "eq=brightness=0.07:contrast=1.12", "noise=alls=10:allf=t"], audio: [] };
+    case "xray":
+      return { video: ["format=gray", "negate", "eq=contrast=1.30:brightness=0.05"], audio: [] };
+    case "cartoon": {
+      const expr = "trunc(val/51)*51+25";
+      return { video: ["bilateral=sigmaS=3:sigmaR=0.30", `lutrgb=r='${expr}':g='${expr}':b='${expr}'`], audio: [] };
+    }
+    case "clarity":
+      return { video: [`cas=${fx.amount.toFixed(2)}`], audio: [] };
+    case "echo":
+      return { video: [], audio: [`aecho=0.8:0.85:${Math.round(fx.delayMs)}:${fx.decay.toFixed(2)}`] };
+    case "reverb":
+      return { video: [], audio: ["aecho=0.8:0.85:60|120|240:0.35|0.25|0.15"] };
+    case "chorus":
+      return { video: [], audio: ["chorus=0.7:0.9:55:0.4:0.25:2"] };
+    case "distortion": {
+      const d = Math.min(1, Math.max(0, fx.drive));
+      const bits = Math.max(2, Math.round(16 - d * 12));
+      return { video: [], audio: [`acrusher=bits=${bits}:mix=${(0.3 + d * 0.6).toFixed(2)}:aa=1`] };
+    }
+    case "telephone":
+      return { video: [], audio: ["highpass=f=400", "lowpass=f=3400", "equalizer=f=1200:width_type=o:width=2:g=4"] };
+    case "bass_boost":
+      return { video: [], audio: [`bass=g=${fx.gain.toFixed(1)}:f=110:width_type=o:width=1`] };
+    case "treble_boost":
+      return { video: [], audio: [`treble=g=${fx.gain.toFixed(1)}:f=3200:width_type=o:width=1`] };
+    case "compressor":
+      return { video: [], audio: [`acompressor=threshold=-18dB:ratio=${fx.ratio.toFixed(1)}:attack=10:release=180:makeup=3dB`] };
+    case "underwater":
+      return { video: [], audio: ["lowpass=f=800", "chorus=0.6:0.8:80:0.3:0.2:1.5"] };
   }
 }
 

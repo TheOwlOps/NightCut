@@ -86,6 +86,13 @@ your machine, and stays small:
       words/ranges from the video, one-click filler removal EN + VI),
       bilingual captions (multi text-track export)
 - [x] Wave 18: screen recorder (gdigrab / avfoundation / x11grab)
+- [x] Wave 19: effects library doubled to 52 — hue rotate, exposure,
+      posterize, solarize, sketch, neon edges, pixelate, film grain,
+      RGB split, lens distortion, rotate, motion blur, scanlines,
+      night vision, X-ray, cartoon, clarity (CAS) + audio: echo,
+      reverb, chorus, distortion, telephone, bass/treble boost,
+      compressor, underwater — all real FFmpeg filters, all wired
+      into the panel, Inspector, preview approximations and MCP
 - [ ] Phase 1 leftovers: music mixing polish in UI
 - [ ] Phase 2 (the "smooth like the big editors" phase): proxy cache,
       thumbnail/waveform rendering on the timeline, pre-render around playhead

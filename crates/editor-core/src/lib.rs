@@ -117,6 +117,58 @@ pub enum Effect {
     /// FFmpeg's dialoguenhance, amount 0..1. (Local spectral method —
     /// not stem separation; works best on center-panned speech.)
     VocalIsolate { amount: f64 },
+    /// Global hue rotation, degrees -180..180 (FFmpeg hue).
+    HueRotate { degrees: f64 },
+    /// Exposure compensation in EV stops, -3..3 (FFmpeg exposure).
+    Exposure { ev: f64 },
+    /// Posterize: quantize colors to `levels` steps per channel (2..16).
+    Posterize { levels: u32 },
+    /// Solarize: invert tones above the midpoint.
+    Solarize,
+    /// Pencil-sketch look: grayscale edge detection, inverted.
+    Sketch,
+    /// Neon edge glow: color edge detection.
+    NeonEdges,
+    /// Pixelate / mosaic: block size in source pixels, 2..64.
+    Pixelate { size: u32 },
+    /// Animated film grain, strength 0..100 (FFmpeg noise, temporal).
+    FilmGrain { strength: u32 },
+    /// Chromatic aberration: shift red/blue channels apart, px 0..30.
+    RgbSplit { amount: u32 },
+    /// Lens distortion (barrel/pincushion), k1 -1..1 (lenscorrection).
+    LensDistort { k1: f64 },
+    /// Rotate the frame in-plane, degrees -180..180.
+    Rotate { degrees: f64 },
+    /// Motion blur by temporal mixing, `frames` 2..10 (tmix).
+    MotionBlur { frames: u32 },
+    /// CRT scanlines overlay.
+    Scanlines,
+    /// Night-vision look: green hue shift + gain + grain.
+    NightVision,
+    /// X-ray look: grayscale, inverted, contrast-boosted.
+    Xray,
+    /// Cartoon look: bilateral smoothing + color quantization.
+    Cartoon,
+    /// Contrast-adaptive sharpening (FFmpeg cas), strength 0..1.
+    Clarity { amount: f64 },
+    /// Audio echo: delay ms 30..1000, decay 0..0.9 (aecho).
+    Echo { delay_ms: u32, decay: f64 },
+    /// Audio reverb: multi-tap echo cascade.
+    Reverb,
+    /// Audio chorus: modulated short delays.
+    Chorus,
+    /// Audio distortion / crush, drive 0..1 (acrusher).
+    Distortion { drive: f64 },
+    /// Telephone voice: narrow bandpass + presence bump.
+    Telephone,
+    /// Bass boost, gain dB 0..24.
+    BassBoost { gain: f64 },
+    /// Treble boost, gain dB 0..24.
+    TrebleBoost { gain: f64 },
+    /// Audio compressor, ratio 1..20 (acompressor).
+    Compressor { ratio: f64 },
+    /// Underwater voice: lowpass + slow chorus.
+    Underwater,
 }
 
 /// One point of a speed curve (CapCut "Curve" speed). `at` is a fraction
@@ -616,6 +668,53 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn wave19_effects_serialize_snake_case() {
+        let fx = vec![
+            Effect::HueRotate { degrees: 40.0 },
+            Effect::Exposure { ev: 0.7 },
+            Effect::Posterize { levels: 5 },
+            Effect::Solarize,
+            Effect::Sketch,
+            Effect::NeonEdges,
+            Effect::Pixelate { size: 12 },
+            Effect::FilmGrain { strength: 35 },
+            Effect::RgbSplit { amount: 6 },
+            Effect::LensDistort { k1: 0.35 },
+            Effect::Rotate { degrees: 8.0 },
+            Effect::MotionBlur { frames: 4 },
+            Effect::Scanlines,
+            Effect::NightVision,
+            Effect::Xray,
+            Effect::Cartoon,
+            Effect::Clarity { amount: 0.6 },
+            Effect::Echo { delay_ms: 220, decay: 0.45 },
+            Effect::Reverb,
+            Effect::Chorus,
+            Effect::Distortion { drive: 0.5 },
+            Effect::Telephone,
+            Effect::BassBoost { gain: 8.0 },
+            Effect::TrebleBoost { gain: 8.0 },
+            Effect::Compressor { ratio: 4.0 },
+            Effect::Underwater,
+        ];
+        let json = serde_json::to_string(&fx).unwrap();
+        for tag in [
+            "hue_rotate", "exposure", "posterize", "solarize", "sketch",
+            "neon_edges", "pixelate", "film_grain", "rgb_split",
+            "lens_distort", "rotate", "motion_blur", "scanlines",
+            "night_vision", "xray", "cartoon", "clarity", "echo", "reverb",
+            "chorus", "distortion", "telephone", "bass_boost",
+            "treble_boost", "compressor", "underwater",
+        ] {
+            assert!(json.contains(&format!("\"type\":\"{tag}\"")), "missing {tag} in {json}");
+        }
+        // Field-name contracts the TS mirror relies on.
+        assert!(json.contains("\"delay_ms\":220"), "{json}");
+        let back: Vec<Effect> = serde_json::from_str(&json).unwrap();
+        assert_eq!(fx, back);
     }
 
     #[test]

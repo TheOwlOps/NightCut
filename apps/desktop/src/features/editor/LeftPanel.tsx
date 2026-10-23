@@ -27,6 +27,13 @@ const EFFECT_ICONS: Partial<Record<Effect["type"], string>> = {
   pitch_shift: "🎤", lut: "🎞", loudnorm: "🔊", video_denoise: "✨",
   curves: "📈", color_wheels: "🎡", hsl: "🌈", deflicker: "💡",
   enhance_voice: "🎙", vocal_isolate: "🗣",
+  hue_rotate: "🎨", exposure: "🔆", posterize: "🖼", solarize: "☀️",
+  sketch: "✏️", neon_edges: "⚡", pixelate: "🔲", film_grain: "🎞",
+  rgb_split: "🌈", lens_distort: "🔮", rotate: "🔄", motion_blur: "💨",
+  scanlines: "📺", night_vision: "🌃", xray: "🦴", cartoon: "🦸",
+  clarity: "💎", echo: "🔁", reverb: "🏛", chorus: "🎶",
+  distortion: "🎸", telephone: "☎️", bass_boost: "🔉", treble_boost: "🔔",
+  compressor: "🗜", underwater: "🌊",
 };
 
 const STICKERS = ["🔥", "❤️", "😂", "🎉", "⭐", "👍", "💯", "🚀", "🎬", "🎵", "⚡", "🌙", "✅", "❌", "➡️", "💥"];

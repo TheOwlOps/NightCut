@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useEditor } from "../../store/editor";
-import { EFFECT_LABELS, Effect, SPEED_CURVE_PRESETS, clipDuration } from "../../lib/project";
+import { EFFECT_LABELS, EFFECT_PARAM_SPECS, Effect, SPEED_CURVE_PRESETS, clipDuration } from "../../lib/project";
 
 const EFFECT_TYPES = Object.keys(EFFECT_LABELS) as Effect["type"][];
 
@@ -581,8 +581,28 @@ function EffectControls({ effect, onChange }: { effect: Effect; onChange: (e: Ef
       );
     case "hsl":
       return <HslControls effect={effect} onChange={onChange} />;
-    default:
-      return null; // grayscale / mirror / invert are on-off effects
+    default: {
+      // Generic slider controls for plain-numeric effects (Wave 19 set).
+      const spec = EFFECT_PARAM_SPECS[effect.type];
+      if (!spec) return null; // grayscale / mirror / invert etc. are on-off
+      const rec = effect as unknown as Record<string, number>;
+      return (
+        <>
+          {spec.map((s) => (
+            <Slider
+              key={s.key}
+              label={s.label}
+              value={rec[s.key] ?? 0}
+              min={s.min}
+              max={s.max}
+              step={s.step}
+              onChange={(v) => onChange({ ...effect, [s.key]: s.round ? Math.round(v) : v } as Effect)}
+            />
+          ))}
+          <p className="hint">Applied at export.</p>
+        </>
+      );
+    }
   }
 }
 
