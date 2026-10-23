@@ -109,6 +109,14 @@ pub enum Effect {
     /// Video deflicker (CapCut Deflicker): temporal mean over `size`
     /// frames.
     Deflicker { size: u32 },
+    /// Voice enhancement (CapCut Enhance Voice): denoise + presence
+    /// EQ + gentle compression, strength 0..1.
+    EnhanceVoice { strength: f64 },
+    /// Center-dialogue isolation (CapCut Vocal Isolation): pulls the
+    /// centered dialogue forward and pushes everything else down via
+    /// FFmpeg's dialoguenhance, amount 0..1. (Local spectral method —
+    /// not stem separation; works best on center-panned speech.)
+    VocalIsolate { amount: f64 },
 }
 
 /// One point of a speed curve (CapCut "Curve" speed). `at` is a fraction

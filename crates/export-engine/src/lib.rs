@@ -172,6 +172,8 @@ pub fn effect_video_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
                 sp[0], sp[1], sp[2], mp[0], mp[1], mp[2], hp[0], hp[1], hp[2]
             )]
         }
+        // Audio-only effects: no video filters.
+        Effect::EnhanceVoice { .. } | Effect::VocalIsolate { .. } => Vec::new(),
     }
 }
 
@@ -321,6 +323,28 @@ pub fn effect_audio_filters(effect: &Effect, clip_duration: f64) -> Vec<String> 
         Effect::PitchShift { semitones } => {
             let ratio = 2f64.powf(semitones.clamp(-12.0, 12.0) / 12.0);
             vec![format!("rubberband=pitch={ratio:.4}")]
+        }
+        Effect::EnhanceVoice { strength } => {
+            let s = strength.clamp(0.0, 1.0);
+            vec![
+                "highpass=f=70".to_string(),
+                format!("afftdn=nr={:.1}", 8.0 + s * 24.0),
+                format!("equalizer=f=2800:width_type=o:width=1.5:g={:.1}", 2.0 + s * 5.0),
+                "acompressor=threshold=-20dB:ratio=3:attack=5:release=120:makeup=4dB".to_string(),
+            ]
+        }
+        Effect::VocalIsolate { amount } => {
+            let a = amount.clamp(0.0, 1.0);
+            vec![
+                format!(
+                    "dialoguenhance=original={:.2}:enhance={:.2}:voice=4",
+                    1.0 - a * 0.92,
+                    1.0 + a * 2.0,
+                ),
+                // dialoguenhance outputs 3.0 (extracted center); fold
+                // the center back into stereo for a standard layout.
+                "pan=stereo|c0=0.7*c0+0.5*c2|c1=0.7*c1+0.5*c2".to_string(),
+            ]
         }
         Effect::Loudnorm { target_lufs } => {
             vec![format!("loudnorm=I={:.1}:TP=-1.5:LRA=11", target_lufs.clamp(-24.0, -5.0))]
@@ -1203,6 +1227,16 @@ mod tests {
     }
 
     #[test]
+    fn voice_effects_map_to_audio_filters() {
+        let ev = effect_audio_filters(&Effect::EnhanceVoice { strength: 0.5 }, 3.0);
+        assert_eq!(ev.len(), 4);
+        assert!(ev[1].contains("afftdn=nr=20.0"), "{ev:?}");
+        let vi = effect_audio_filters(&Effect::VocalIsolate { amount: 1.0 }, 3.0);
+        assert_eq!(vi[0], "dialoguenhance=original=0.08:enhance=3.00:voice=4");
+        assert!(vi[1].starts_with("pan=stereo"), "{vi:?}");
+    }
+
+    #[test]
     fn hsl_and_deflicker_map_to_filters() {
         let mut shifts = vec![[0.0; 3]; 8];
         shifts[3] = [20.0, -30.0, 10.0];
@@ -1750,6 +1784,26 @@ mod tests {
             if px[2] > 150 && px[1] > 150 && px[0] < 110 { cyan += 1; }
         }
         assert!(cyan > 40, "expected a cyan glow halo, found {cyan} cyan px");
+    }
+
+    /// Live render: voice effects survive the full export graph.
+    #[test]
+    #[ignore]
+    fn renders_voice_effects() {
+        let dir = std::env::temp_dir().join("nightcut-export-test");
+        let base_path = dir.join("base-red.mp4");
+        assert!(base_path.exists(), "run an earlier live test first");
+        let mut p = Project::default();
+        p.canvas = editor_core::Canvas { width: 320, height: 240, fps: 30 };
+        let mut c1 = Clip::new("c1", "base-red.mp4", 0.0, 2.0, 0.0);
+        c1.effects.push(Effect::EnhanceVoice { strength: 0.7 });
+        c1.effects.push(Effect::VocalIsolate { amount: 0.6 });
+        p.tracks[0].clips = vec![c1];
+        let sources = BTreeMap::from([("c1".to_string(), base_path)]);
+        let out = dir.join("voice-fx.mp4");
+        render(&p, &sources, &out, &ExportSettings::default()).expect("voice fx render");
+        let probe = media_engine::probe(&out).expect("probe");
+        assert!(probe.has_audio, "voice-fx export lost its audio");
     }
 
     /// Live render: a compound clip plays its nested sub-project.

@@ -555,6 +555,22 @@ function EffectControls({ effect, onChange }: { effect: Effect; onChange: (e: Ef
           <p className="hint">Applied with lut3d at export on the desktop build.</p>
         </>
       );
+    case "enhance_voice":
+      return (
+        <>
+          <Slider label="Strength" value={effect.strength} min={0} max={1} step={0.05}
+            onChange={(v) => onChange({ ...effect, strength: v })} />
+          <p className="hint">Denoise + presence EQ + compression, applied at export.</p>
+        </>
+      );
+    case "vocal_isolate":
+      return (
+        <>
+          <Slider label="Amount" value={effect.amount} min={0} max={1} step={0.05}
+            onChange={(v) => onChange({ ...effect, amount: v })} />
+          <p className="hint">Pulls center-panned dialogue forward (spectral method — best on speech mixed in the center).</p>
+        </>
+      );
     case "deflicker":
       return (
         <>
