@@ -13,6 +13,7 @@ import {
   Effect,
   newId,
   splitClip,
+  transcriptWords,
   Clip,
   Project,
 } from "../../lib/project";
@@ -614,12 +615,45 @@ function CaptionsPanel() {
   const addCaptionsFromSrt = useEditor((s) => s.addCaptionsFromSrt);
   const addCaptionCues = useEditor((s) => s.addCaptionCues);
   const addTextClip = useEditor((s) => s.addTextClip);
+  const cutRanges = useEditor((s) => s.cutRanges);
+  const setPlayhead = useEditor((s) => s.setPlayhead);
   const media = useEditor((s) => s.media);
   const project = useEditor((s) => s.project);
   const fileRef = useRef<HTMLInputElement>(null);
+  const fileRef2 = useRef<HTMLInputElement>(null);
   const [msg, setMsg] = useState("");
   const [line, setLine] = useState("");
   const [busy, setBusy] = useState(false);
+  const [anchor, setAnchor] = useState<number | null>(null);
+  const [rangeSel, setRangeSel] = useState<[number, number] | null>(null);
+
+  const words = transcriptWords(project);
+  const fillerCount = words.filter((w) => w.filler).length;
+  const clickWord = (i: number, shift: boolean) => {
+    setPlayhead(words[i].start + 0.01);
+    if (shift && anchor !== null) {
+      setRangeSel([Math.min(anchor, i), Math.max(anchor, i)]);
+    } else {
+      setAnchor(i);
+      setRangeSel([i, i]);
+    }
+  };
+  const cutSelectedWords = () => {
+    if (!rangeSel) return;
+    const [a, b] = rangeSel;
+    const pad = 0.03;
+    cutRanges([[Math.max(0, words[a].start - pad), words[b].end + pad]]);
+    setRangeSel(null);
+    setAnchor(null);
+    setMsg(`Cut words ${a + 1}–${b + 1} from the video (captions shifted to match).`);
+  };
+  const removeFillers = () => {
+    const ranges: [number, number][] = words
+      .filter((w) => w.filler)
+      .map((w) => [Math.max(0, w.start - 0.02), w.end + 0.02]);
+    cutRanges(ranges);
+    setMsg(`Removed ${ranges.length} filler word(s).`);
+  };
 
   const autoCaptions = async () => {
     // The clip whose captions we generate: first video clip on the timeline.
@@ -654,6 +688,13 @@ function CaptionsPanel() {
       setMsg(n > 0 ? `Imported ${n} caption lines onto the text track.` : "No captions found in that file — is it a valid .srt?");
     });
   };
+  const importSrt2 = (file: File | undefined) => {
+    if (!file) return;
+    void file.text().then((text) => {
+      const n = addCaptionsFromSrt(text, "track-text-2", 0.97);
+      setMsg(n > 0 ? `Imported ${n} second-language lines (bottom track).` : "No captions found in that file — is it a valid .srt?");
+    });
+  };
   return (
     <div className="dock-panel">
       <div className="panel-title">Captions</div>
@@ -661,6 +702,40 @@ function CaptionsPanel() {
         Import .srt subtitles
       </button>
       <input ref={fileRef} type="file" accept=".srt,text/plain" hidden onChange={(e) => importSrt(e.target.files?.[0])} />
+      <button onClick={() => fileRef2.current?.click()}>
+        Import .srt — 2nd language (bilingual)
+      </button>
+      <input ref={fileRef2} type="file" accept=".srt,text/plain" hidden onChange={(e) => importSrt2(e.target.files?.[0])} />
+      {words.length > 0 && (
+        <div className="field">
+          <span>Transcript — click a word to seek, Shift+click to select a range</span>
+          <div className="transcript-box">
+            {words.map((w, i) => (
+              <span
+                key={i}
+                className={
+                  "tword" +
+                  (w.filler ? " filler" : "") +
+                  (rangeSel && i >= rangeSel[0] && i <= rangeSel[1] ? " insel" : "")
+                }
+                onClick={(e) => clickWord(i, e.shiftKey)}
+              >
+                {w.word}{" "}
+              </span>
+            ))}
+          </div>
+          <div className="row">
+            <button disabled={!rangeSel} onClick={cutSelectedWords}>✂ Cut selected words</button>
+            <button disabled={fillerCount === 0} onClick={removeFillers}>
+              🧹 Remove fillers ({fillerCount})
+            </button>
+          </div>
+          <p className="hint">
+            Cutting words removes those moments from the main video track and shifts
+            everything after them — edit the video by editing the text.
+          </p>
+        </div>
+      )}
       {msg && <p className="status">{msg}</p>}
       <div className="field">
         <span>Add one caption at playhead</span>

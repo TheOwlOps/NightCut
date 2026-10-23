@@ -16,6 +16,7 @@ import {
   sourceAtPlayed,
   splitClip,
   toRustJson,
+  cutTimelineRanges,
 } from "../lib/project";
 
 export interface MediaItem {
@@ -65,7 +66,10 @@ interface EditorState {
   addMedia: (item: MediaItem) => void;
   addToTimeline: (mediaId: string) => void;
   addTextClip: (text: string, style?: { fontSize: number; color: string; bg?: string; shadow?: boolean }) => void;
-  addCaptionsFromSrt: (content: string) => number;
+  addCaptionsFromSrt: (content: string, trackId?: string, textY?: number) => number;
+  /** Remove timeline ranges everywhere (transcript editing): the main
+   * video track is rebuilt gap-free; other clips shift or drop. */
+  cutRanges: (ranges: [number, number][]) => void;
   addCaptionCues: (cues: { start: number; end: number; text: string }[], offset: number) => number;
   addAudioAtPlayhead: (mediaId: string) => void;
   setMediaThumb: (mediaId: string, thumb: string) => void;
@@ -205,12 +209,16 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({ ...withHistory(s, next), selected: { trackId: "track-text", clipId: clip.id } });
   },
 
-  addCaptionsFromSrt: (content) => {
+  addCaptionsFromSrt: (content, trackId = "track-text", textY) => {
     const cues = parseSrt(content);
     if (cues.length === 0) return 0;
     const s = get();
     const next = structuredClone(s.project);
-    const track = next.tracks.find((t) => t.id === "track-text")!;
+    let track = next.tracks.find((t) => t.id === trackId);
+    if (!track) {
+      track = { id: trackId, kind: "text", clips: [] };
+      next.tracks.push(track);
+    }
     for (const cue of cues) {
       // A caption is a text clip whose local window is [0, cue length] and
       // whose timeline position is the cue start (clipDuration semantics).
@@ -225,11 +233,18 @@ export const useEditor = create<EditorState>((set, get) => ({
         text: cue.text,
         fontSize: 48,
         textColor: "#ffffff",
+        ...(textY !== undefined ? { textY } : {}),
       });
     }
     track.clips.sort((a, b) => a.timelineStart - b.timelineStart);
     set(withHistory(s, next));
     return cues.length;
+  },
+
+  cutRanges: (ranges) => {
+    if (ranges.length === 0) return;
+    const s = get();
+    set({ ...withHistory(s, cutTimelineRanges(s.project, ranges)), selected: null, multiSel: [] });
   },
 
   addCaptionCues: (cues, offset) => {

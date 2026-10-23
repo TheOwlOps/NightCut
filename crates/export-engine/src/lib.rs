@@ -901,11 +901,15 @@ pub fn build_ffmpeg_args_full(
         }
     };
     if let Some(font) = &font {
-        let text_track = project.tracks.iter().find(|t| t.kind == TrackKind::Text);
-        if let Some(track) = text_track {
-            for (j, clip) in track.clips.iter().enumerate() {
+        // ALL text tracks render (bilingual captions: a second SRT can
+        // live on its own track at its own height).
+        let mut text_seq = 0usize;
+        for track in project.tracks.iter().filter(|t| t.kind == TrackKind::Text) {
+            if track.hidden || track.muted { continue; }
+            for clip in track.clips.iter() {
                 let Some(text) = &clip.text else { continue };
-                let next = format!("vtxt{j}");
+                let next = format!("vtxt{text_seq}");
+                text_seq += 1;
                 let color = clip
                     .text_color
                     .as_deref()
@@ -1224,6 +1228,24 @@ mod tests {
         // Blue is untouched by a red-range saturation cut.
         let (r, g, b) = apply_hsl(0.0, 0.0, 1.0, &shifts2);
         assert!(b > 0.95 && r < 0.05, "blue stays: {r},{g},{b}");
+    }
+
+    #[test]
+    fn all_text_tracks_render_drawtext() {
+        let (mut p, sources) = two_clip_project();
+        // A second text track (bilingual) must also produce drawtext,
+        // with unique labels.
+        let mut t2 = editor_core::Track::new("track-text-2", TrackKind::Text);
+        let mut vi = Clip::text_clip("t9", "Xin chao", 0.5, 2.0);
+        vi.text_y = Some(0.97);
+        t2.clips.push(vi);
+        p.tracks.push(t2);
+        let dir = std::env::temp_dir().join("nightcut-args");
+        let args = build_ffmpeg_args(&p, &sources, &dir.join("o.mp4"), &ExportSettings::default()).unwrap();
+        let j = args.join(" ");
+        let n = j.matches("drawtext=").count();
+        assert_eq!(n, 2, "both text tracks should render: {j}");
+        assert!(j.contains("[vtxt0]") && j.contains("[vtxt1]"), "{j}");
     }
 
     #[test]

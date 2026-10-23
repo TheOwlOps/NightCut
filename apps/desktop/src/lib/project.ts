@@ -592,6 +592,134 @@ export function projectToRustObj(p: Project): Record<string, unknown> {
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
 
+/** One spoken word placed on the timeline (transcript editing). */
+export interface TranscriptWord {
+  word: string;
+  start: number;
+  end: number;
+  filler: boolean;
+}
+
+/** Words recognised as fillers (EN + VI) for one-click removal. */
+export const FILLER_WORDS = new Set([
+  "um", "uh", "uhm", "erm", "er", "hmm", "mm",
+  "à", "ừ", "ờ", "ờm", "ừm", "hừm", "ấy",
+]);
+
+/**
+ * Flatten the text tracks' caption clips into timed words. Word timing
+ * inside a caption is interpolated by word length — exact when the
+ * caption came from whisper at phrase granularity, approximate
+ * otherwise (the cut still lands within the caption's span).
+ */
+export function transcriptWords(p: Project): TranscriptWord[] {
+  const out: TranscriptWord[] = [];
+  const clips = p.tracks
+    .filter((t) => t.kind === "text")
+    .flatMap((t) => t.clips)
+    .filter((c) => c.text)
+    .sort((a, b) => a.timelineStart - b.timelineStart);
+  for (const c of clips) {
+    const words = (c.text ?? "").split(/\s+/).filter(Boolean);
+    if (words.length === 0) continue;
+    const start = c.timelineStart;
+    const end = clipEnd(c);
+    const weights = words.map((w) => w.length + 1);
+    const total = weights.reduce((a, b) => a + b, 0);
+    let cursor = start;
+    words.forEach((w, i) => {
+      const dur = ((end - start) * weights[i]) / total;
+      const clean = w.toLowerCase().replace(/[.,!?;:"""''…]+/g, "");
+      out.push({ word: w, start: cursor, end: cursor + dur, filler: FILLER_WORDS.has(clean) });
+      cursor += dur;
+    });
+  }
+  return out;
+}
+
+/**
+ * Remove timeline ranges from the project (transcript/jump-cut
+ * editing). The main video track is rebuilt gap-free from its kept
+ * segments (constant-speed clips only); every other clip shifts left
+ * past the cuts, and a clip whose center falls inside a cut is
+ * dropped. Returns a new project (input untouched).
+ */
+export function cutTimelineRanges(p: Project, ranges: [number, number][]): Project {
+  const cuts = ranges
+    .filter(([s, e]) => e > s)
+    .sort((a, b) => a[0] - b[0]);
+  if (cuts.length === 0) return p;
+  const removedBefore = (t: number) =>
+    cuts.reduce((acc, [s, e]) => acc + Math.max(0, Math.min(e, t) - s) * (t > s ? 1 : 0), 0);
+  const centerCut = (start: number, end: number) => {
+    const mid = (start + end) / 2;
+    return cuts.some(([s, e]) => mid >= s && mid < e);
+  };
+  /** Majority rule for companion tracks: a caption/audio clip is
+   * dropped only when the cuts swallow more than half of it (cutting
+   * one word out of a caption must not delete the whole caption). */
+  const mostlyCut = (start: number, end: number) => {
+    const dur = Math.max(0.001, end - start);
+    const overlap = cuts.reduce(
+      (acc, [s, e]) => acc + Math.max(0, Math.min(e, end) - Math.max(s, start)),
+      0,
+    );
+    return overlap / dur > 0.5;
+  };
+  const next = structuredClone(p);
+  const mainIdx = next.tracks.findIndex((t) => t.kind === "video");
+  next.tracks.forEach((track, ti) => {
+    if (ti === mainIdx) {
+      const rebuilt: Clip[] = [];
+      for (const clip of track.clips) {
+        const start = clip.timelineStart;
+        const end = clipEnd(clip);
+        const inside = cuts.filter(([s, e]) => e > start && s < end);
+        if (inside.length === 0 || clip.speedCurve?.length || clip.freezeDuration !== undefined || clip.compoundId) {
+          if (inside.length === 0) {
+            rebuilt.push({ ...clip, timelineStart: start - removedBefore(start) });
+          } else if (!centerCut(start, end)) {
+            // Curve/freeze/compound clips can't be re-segmented; keep
+            // them whole, shifted (their span may overlap a cut).
+            rebuilt.push({ ...clip, timelineStart: start - removedBefore(start) });
+          }
+          continue;
+        }
+        // Kept source segments of this clip.
+        const kept: [number, number][] = [];
+        let cursor = clip.inSec;
+        for (const [s, e] of inside) {
+          const cs = clip.inSec + (Math.max(s, start) - start) * clip.speed;
+          const ce = clip.inSec + (Math.min(e, end) - start) * clip.speed;
+          if (cs > cursor) kept.push([cursor, cs]);
+          cursor = Math.max(cursor, ce);
+        }
+        if (cursor < clip.outSec) kept.push([cursor, clip.outSec]);
+        let at = start - removedBefore(start);
+        kept.forEach(([s2, e2], i) => {
+          rebuilt.push({
+            ...structuredClone(clip),
+            id: i === 0 ? clip.id : `${clip.id}-cut${i}`,
+            inSec: s2,
+            outSec: e2,
+            timelineStart: at,
+            speedCurve: undefined,
+            keyframes: undefined,
+            freezeDuration: undefined,
+          });
+          at += (e2 - s2) / Math.max(0.01, clip.speed);
+        });
+      }
+      track.clips = rebuilt.sort((a, b) => a.timelineStart - b.timelineStart);
+    } else {
+      track.clips = track.clips
+        .filter((c) => !mostlyCut(c.timelineStart, clipEnd(c)))
+        .map((c) => ({ ...c, timelineStart: c.timelineStart - removedBefore(c.timelineStart) }));
+    }
+  });
+  return next;
+}
+
 /** Build the FFmpeg command for a project — mirrors export-engine (Rust).
  * In the desktop (Tauri) build the same graph runs natively; in a plain
  * browser this command is what the Export panel shows/copies. */
