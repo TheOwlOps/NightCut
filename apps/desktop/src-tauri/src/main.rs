@@ -5,7 +5,68 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
+
+/// The running screen-recording ffmpeg process, if any.
+struct RecorderState(Mutex<Option<Child>>);
+
+/// Start recording the screen to `output` (MP4) with the platform's
+/// native capture backend: gdigrab (Windows), avfoundation (macOS),
+/// x11grab (Linux/X11). Audio is not captured in v1.
+#[tauri::command]
+fn start_screen_record(
+    state: tauri::State<'_, RecorderState>,
+    output: String,
+) -> Result<(), String> {
+    let mut slot = state.0.lock().map_err(|e| e.to_string())?;
+    if slot.is_some() {
+        return Err("a screen recording is already running".into());
+    }
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-y", "-v", "error"]);
+    #[cfg(target_os = "windows")]
+    cmd.args(["-f", "gdigrab", "-framerate", "30", "-i", "desktop"]);
+    #[cfg(target_os = "macos")]
+    cmd.args(["-f", "avfoundation", "-framerate", "30", "-i", "Capture screen 0"]);
+    #[cfg(target_os = "linux")]
+    {
+        let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
+        cmd.args(["-f", "x11grab", "-framerate", "30", "-i", &display]);
+    }
+    let child = cmd
+        .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", &output])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("failed to start ffmpeg: {e}"))?;
+    *slot = Some(child);
+    Ok(())
+}
+
+/// Stop the running screen recording (ffmpeg finalizes the MP4 when
+/// it receives "q" on stdin) and return the output path's duration
+/// probe happens on the frontend side.
+#[tauri::command]
+fn stop_screen_record(
+    state: tauri::State<'_, RecorderState>,
+    output: String,
+) -> Result<String, String> {
+    let mut slot = state.0.lock().map_err(|e| e.to_string())?;
+    let mut child = slot.take().ok_or("no screen recording is running")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"q");
+        let _ = stdin.flush();
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!("ffmpeg recording failed: {status}"));
+    }
+    Ok(output)
+}
 
 #[tauri::command]
 fn probe_media(path: String) -> Result<media_engine::MediaInfo, String> {
@@ -268,10 +329,11 @@ async fn auto_captions(path: String, model: String) -> Result<Vec<media_engine::
 
 fn main() {
     tauri::Builder::default()
+        .manage(RecorderState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             probe_media, make_proxy, waveform, export_video, pick_media_files, auto_captions,
             text_to_speech, detect_beats, detect_scenes, detect_silences, track_motion, remove_background,
-            list_plugins, nightcut_cache_dir
+            list_plugins, nightcut_cache_dir, start_screen_record, stop_screen_record
         ])
         .run(tauri::generate_context!())
         .expect("error while running NightCut");

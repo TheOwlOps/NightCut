@@ -1,6 +1,54 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useEditor } from "../../store/editor";
 import { newId } from "../../lib/project";
+
+/** Screen recorder (desktop): ffmpeg captures the display via the
+ * platform backend; the finished MP4 imports straight into the bin. */
+function ScreenRecorder({ onRecorded }: { onRecorded: (path: string) => void }) {
+  const [recording, setRecording] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [note, setNote] = useState("");
+  const outRef = useRef<string>("");
+
+  useEffect(() => {
+    if (!recording) return;
+    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(id);
+  }, [recording]);
+
+  const toggle = async () => {
+    try {
+      if (!recording) {
+        const dir = await tauriInvoke<string>("nightcut_cache_dir");
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        outRef.current = `${dir}/screen-${stamp}.mp4`;
+        await tauriInvoke("start_screen_record", { output: outRef.current });
+        setElapsed(0);
+        setRecording(true);
+        setNote("Recording the screen — NightCut is capturing this display.");
+      } else {
+        const out = await tauriInvoke<string>("stop_screen_record", { output: outRef.current });
+        setRecording(false);
+        setNote("Recording saved and added to the media bin.");
+        onRecorded(out);
+      }
+    } catch (err) {
+      setRecording(false);
+      setNote(`Screen recording failed: ${String(err)}`);
+    }
+  };
+
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+  const ss = String(elapsed % 60).padStart(2, "0");
+  return (
+    <div className="field">
+      <button className={recording ? "danger" : ""} onClick={() => void toggle()}>
+        {recording ? `⏹ Stop recording (${mm}:${ss})` : "⏺ Record screen"}
+      </button>
+      {note && <p className="status">{note}</p>}
+    </div>
+  );
+}
 
 declare global {
   interface Window {
@@ -78,45 +126,47 @@ export default function MediaBin() {
 
   const importNative = async () => {
     const paths = await tauriInvoke<string[]>("pick_media_files");
-    const { convertFileSrc } = await import("@tauri-apps/api/core");
     for (const path of paths) {
-      const name = path.split(/[\\/]/).pop() ?? path;
-      const kind = /\.(mp3|wav|m4a|aac|ogg)$/i.test(name)
-        ? "audio"
-        : /\.(png|jpe?g|webp|bmp)$/i.test(name)
-          ? "image"
-          : "video";
-      const id = newId("media");
-      const url = convertFileSrc(path);
-      if (kind === "image") {
-        // Still image: 5s overlay by default; the file itself is the thumb.
-        addMedia({ id, name, url, duration: 5, kind, path });
-        setMediaThumb(id, url);
-        continue;
-      }
-      let duration = 0;
-      try {
-        const info = await tauriInvoke<{ duration: number }>("probe_media", { path });
-        duration = info.duration || 0;
-      } catch {
-        /* probing is best-effort; duration refines on export */
-      }
-      addMedia({ id, name, url, duration, kind, path });
-      if (kind === "video") {
-        // Generate a low-res proxy in the background for smooth scrubbing
-        // (CapCut's proxy mode); preview can toggle to it.
-        const proxyOut = `${path.replace(/(\.[^.]+)?$/, ".proxy.mp4")}`;
-        void tauriInvoke<string>("make_proxy", { input: path, output: proxyOut })
-          .then((out) => useEditor.getState().setMediaProxy(id, out, convertFileSrc(out)))
-          .catch(() => { /* proxy is an optimization, never a blocker */ });
-      }
-      if (kind === "video") {
-        const probe = document.createElement("video");
-        probe.preload = "auto";
-        probe.muted = true;
-        probe.onloadedmetadata = () => captureThumb(probe, (thumb) => setMediaThumb(id, thumb));
-        probe.src = url;
-      }
+      await importOnePath(path);
+    }
+  };
+
+  const importOnePath = async (path: string) => {
+    const { convertFileSrc } = await import("@tauri-apps/api/core");
+    const name = path.split(/[\\/]/).pop() ?? path;
+    const kind = /\.(mp3|wav|m4a|aac|ogg)$/i.test(name)
+      ? "audio"
+      : /\.(png|jpe?g|webp|bmp)$/i.test(name)
+        ? "image"
+        : "video";
+    const id = newId("media");
+    const url = convertFileSrc(path);
+    if (kind === "image") {
+      // Still image: 5s overlay by default; the file itself is the thumb.
+      addMedia({ id, name, url, duration: 5, kind, path });
+      setMediaThumb(id, url);
+      return;
+    }
+    let duration = 0;
+    try {
+      const info = await tauriInvoke<{ duration: number }>("probe_media", { path });
+      duration = info.duration || 0;
+    } catch {
+      /* probing is best-effort; duration refines on export */
+    }
+    addMedia({ id, name, url, duration, kind, path });
+    if (kind === "video") {
+      // Generate a low-res proxy in the background for smooth scrubbing
+      // (CapCut's proxy mode); preview can toggle to it.
+      const proxyOut = `${path.replace(/(\.[^.]+)?$/, ".proxy.mp4")}`;
+      void tauriInvoke<string>("make_proxy", { input: path, output: proxyOut })
+        .then((out) => useEditor.getState().setMediaProxy(id, out, convertFileSrc(out)))
+        .catch(() => { /* proxy is an optimization, never a blocker */ });
+      const probe = document.createElement("video");
+      probe.preload = "auto";
+      probe.muted = true;
+      probe.onloadedmetadata = () => captureThumb(probe, (thumb) => setMediaThumb(id, thumb));
+      probe.src = url;
     }
   };
 
@@ -131,6 +181,7 @@ export default function MediaBin() {
       <button className="primary" onClick={onImport}>
         + Import video / audio / image
       </button>
+      {isTauri() && <ScreenRecorder onRecorded={(p) => void importOnePath(p)} />}
       <input
         ref={fileRef}
         type="file"
