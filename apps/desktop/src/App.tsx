@@ -8,7 +8,7 @@ import { useEditor } from "./store/editor";
 import { Project } from "./lib/project";
 
 export default function App() {
-  const { undo, redo, loadProject, past, future } = useEditor();
+  const { undo, redo, loadProject } = useEditor();
   const [exportOpen, setExportOpen] = useState(false);
   const openRef = useRef<HTMLInputElement>(null);
 
@@ -71,8 +71,6 @@ export default function App() {
         <strong>NightCut</strong>
         <span className="topbar-sub">open-source video editor</span>
         <span className="spacer" />
-        <button onClick={undo} disabled={past.length === 0} title="Undo (Ctrl+Z)">↩ Undo</button>
-        <button onClick={redo} disabled={future.length === 0} title="Redo (Ctrl+Y)">↪ Redo</button>
         <button onClick={() => openRef.current?.click()}>Open project</button>
         <input
           ref={openRef}

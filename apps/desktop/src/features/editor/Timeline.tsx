@@ -1,6 +1,11 @@
 import { useRef, useState } from "react";
 import { useEditor } from "../../store/editor";
 import Waveform from "./Waveform";
+import {
+  IconUndo, IconRedo, IconSplit, IconTrash, IconText, IconFreeze,
+  IconMagnet, IconFit, IconFilm, IconAudio, IconEye, IconEyeOff,
+  IconVolume, IconVolumeX, IconLock, IconUnlock,
+} from "./Icons";
 import { Clip, clipDuration, projectDuration } from "../../lib/project";
 import { formatTime } from "./Preview";
 
@@ -73,37 +78,44 @@ export default function Timeline() {
   return (
     <section className="timeline" onPointerMove={onPointerMove} onPointerUp={stopDrag}>
       <div className="timeline-toolbar">
-        <button onClick={state.splitSelected} disabled={!selected} title="Split selected clip at playhead">
-          ✂ Split
+        <button className="tool-btn" onClick={state.undo} disabled={state.past.length === 0} title="Undo (Ctrl+Z)">
+          <IconUndo size={18} />
         </button>
-        <button onClick={state.deleteSelected} disabled={!selected} title="Delete selected clip">
-          🗑 Delete
+        <button className="tool-btn" onClick={state.redo} disabled={state.future.length === 0} title="Redo (Ctrl+Y)">
+          <IconRedo size={18} />
         </button>
-        <button onClick={() => state.addTextClip("Your text")} title="Add a text clip at the playhead">
-          T+ Text
+        <span className="tool-sep" />
+        <button className="tool-btn" onClick={state.splitSelected} disabled={!selected} title="Split selected clip at playhead (Ctrl+B)">
+          <IconSplit size={18} />
         </button>
-        <button onClick={state.freezeAtPlayhead} title="Freeze the frame at the playhead for 2s (CapCut Freeze)">
-          ❄ Freeze
+        <button className="tool-btn" onClick={state.deleteSelected} disabled={!selected} title="Delete selected clip">
+          <IconTrash size={18} />
+        </button>
+        <button className="tool-btn" onClick={() => state.addTextClip("Your text")} title="Add a text clip at the playhead">
+          <IconText size={18} />
+        </button>
+        <button className="tool-btn" onClick={state.freezeAtPlayhead} title="Freeze the frame at the playhead for 2s (CapCut Freeze)">
+          <IconFreeze size={18} />
         </button>
         <button
-          className={snap ? "chip active" : "chip"}
+          className={snap ? "tool-btn active" : "tool-btn"}
           onClick={() => setSnap(!snap)}
           title="Magnet: snap clips to edges and the playhead"
         >
-          🧲 Snap
+          <IconMagnet size={18} />
         </button>
         <span className="spacer" />
         <button
+          className="tool-btn"
           onClick={() => {
             const el = tracksRef.current;
             if (el) state.setZoom(Math.max(8, Math.floor(el.clientWidth / duration)));
           }}
           title="Fit the whole project to the visible width"
         >
-          ⤢ Fit
+          <IconFit size={18} />
         </button>
-        <label>
-          Zoom{" "}
+        <label className="zoom-label">
           <input
             type="range"
             min={12}
@@ -120,27 +132,29 @@ export default function Timeline() {
           <div className="ruler-spacer" />
           {project.tracks.map((track) => (
             <div key={track.id} className="track-header" style={{ height: rowHeight(track.kind) }}>
-              <span className="th-icon">{track.kind === "video" ? "🎬" : track.kind === "audio" ? "🎵" : "T"}</span>
+              <span className="th-icon">
+                {track.kind === "video" ? <IconFilm size={15} /> : track.kind === "audio" ? <IconAudio size={15} /> : <IconText size={15} />}
+              </span>
               <button
                 className={track.hidden ? "off" : ""}
                 title={track.hidden ? "Show track" : "Hide track (preview)"}
                 onClick={() => state.toggleTrack(track.id, "hidden")}
               >
-                {track.hidden ? "🙈" : "👁"}
+                {track.hidden ? <IconEyeOff /> : <IconEye />}
               </button>
               <button
                 className={track.muted ? "off" : ""}
                 title={track.muted ? "Unmute track" : "Mute track"}
                 onClick={() => state.toggleTrack(track.id, "muted")}
               >
-                {track.muted ? "🔇" : "🔊"}
+                {track.muted ? <IconVolumeX /> : <IconVolume />}
               </button>
               <button
                 className={track.locked ? "" : "off"}
                 title={track.locked ? "Unlock track" : "Lock track"}
                 onClick={() => state.toggleTrack(track.id, "locked")}
               >
-                {track.locked ? "🔒" : "🔓"}
+                {track.locked ? <IconLock /> : <IconUnlock />}
               </button>
             </div>
           ))}

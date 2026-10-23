@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useEditor } from "../../store/editor";
+import { IconPlay, IconPause, IconPrev, IconFullscreen } from "./Icons";
 import {
   clipEnd, cssFilterFor, fadeOpacity, interpKeyframes, playedAtSource, projectDuration,
   sourceAtPlayed,
@@ -151,9 +152,9 @@ export default function Preview() {
       </div>
       <div className="player-bar">
         <div className="transport">
-          <button className="play-btn" onClick={() => setPlayhead(0)} title="Back to start">⏮</button>
-          <button className="play-btn" onClick={() => setPlaying(!playing)}>
-            {playing ? "⏸" : "▶"}
+          <button className="play-btn ghost" onClick={() => setPlayhead(0)} title="Back to start"><IconPrev /></button>
+          <button className="play-btn" onClick={() => setPlaying(!playing)} title={playing ? "Pause (Space)" : "Play (Space)"}>
+            {playing ? <IconPause /> : <IconPlay />}
           </button>
           <span className="timecode">
             <b>{formatTime(playhead)}</b> / {formatTime(projectDuration(project))}
@@ -184,14 +185,14 @@ export default function Preview() {
           Proxy
         </button>
         <button
-          className="play-btn"
+          className="play-btn ghost"
           title="Fullscreen preview"
           onClick={() => {
             const el = document.querySelector(".preview-stage");
             if (el) void el.requestFullscreen?.();
           }}
         >
-          ⛶
+          <IconFullscreen size={19} />
         </button>
       </div>
     </section>

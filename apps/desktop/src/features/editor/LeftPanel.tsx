@@ -1,4 +1,8 @@
-import { useRef, useState } from "react";
+import { useRef, useState, ReactNode } from "react";
+import {
+  IconMedia, IconText, IconEffects, IconFilters, IconTransitions,
+  IconAudio, IconCaptions, IconTemplates, IconStickers,
+} from "./Icons";
 import MediaBin, { isTauri } from "./MediaBin";
 import { useEditor } from "../../store/editor";
 import {
@@ -45,16 +49,16 @@ function StickersPanel() {
 
 type Tab = "media" | "text" | "effects" | "filters" | "transitions" | "audio" | "captions" | "templates" | "stickers";
 
-const TABS: { id: Tab; icon: string; label: string }[] = [
-  { id: "media", icon: "🎞", label: "Media" },
-  { id: "text", icon: "T", label: "Text" },
-  { id: "effects", icon: "✨", label: "Effects" },
-  { id: "filters", icon: "🎨", label: "Filters" },
-  { id: "transitions", icon: "⇄", label: "Transitions" },
-  { id: "audio", icon: "🎵", label: "Audio" },
-  { id: "captions", icon: "CC", label: "Captions" },
-  { id: "templates", icon: "▦", label: "Templates" },
-  { id: "stickers", icon: "🌟", label: "Stickers" },
+const TABS: { id: Tab; icon: ReactNode; label: string }[] = [
+  { id: "media", icon: <IconMedia />, label: "Media" },
+  { id: "text", icon: <IconText />, label: "Text" },
+  { id: "effects", icon: <IconEffects />, label: "Effects" },
+  { id: "filters", icon: <IconFilters />, label: "Filters" },
+  { id: "transitions", icon: <IconTransitions />, label: "Transitions" },
+  { id: "audio", icon: <IconAudio />, label: "Audio" },
+  { id: "captions", icon: <IconCaptions />, label: "Captions" },
+  { id: "templates", icon: <IconTemplates />, label: "Templates" },
+  { id: "stickers", icon: <IconStickers />, label: "Stickers" },
 ];
 
 /**
