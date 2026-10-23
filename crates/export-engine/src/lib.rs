@@ -685,12 +685,25 @@ pub fn build_ffmpeg_args_stabilized(
                     .as_deref()
                     .map(|hex| format!("0x{}", hex.trim_start_matches('#')))
                     .unwrap_or_else(|| "white".to_string());
+                // Caption pill (drawtext box) + drop shadow, CapCut-style.
+                let mut extra = String::new();
+                if let Some(bg) = &clip.text_bg {
+                    extra.push_str(&format!(
+                        ":box=1:boxcolor=0x{}@0.65:boxborderw={}",
+                        bg.trim_start_matches('#'),
+                        clip.font_size.unwrap_or(64) / 3,
+                    ));
+                }
+                if clip.text_shadow {
+                    extra.push_str(":shadowcolor=black@0.6:shadowx=3:shadowy=3");
+                }
                 filters.push(format!(
-                    "[{current}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor={}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-220:enable='between(t,{:.3},{:.3})'[{next}]",
+                    "[{current}]drawtext=fontfile='{}':text='{}':fontsize={}:fontcolor={}:borderw=3:bordercolor=black{}:x=(w-text_w)/2:y=h-220:enable='between(t,{:.3},{:.3})'[{next}]",
                     font.display(),
                     escape_drawtext(text),
                     clip.font_size.unwrap_or(64),
                     color,
+                    extra,
                     clip.timeline_start,
                     clip.timeline_end(),
                 ));

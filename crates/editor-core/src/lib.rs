@@ -176,6 +176,13 @@ pub struct Clip {
     /// Text color for text clips, `#RRGGBB`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_color: Option<String>,
+    /// Caption background pill color for text clips, `#RRGGBB`
+    /// (drawtext box) — the classic CapCut subtitle look.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_bg: Option<String>,
+    /// Drop shadow for text clips.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub text_shadow: bool,
     /// Speed curve; when present it replaces the constant `speed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed_curve: Option<Vec<SpeedPoint>>,
@@ -212,6 +219,7 @@ impl Clip {
             in_sec, out_sec, timeline_start,
             speed: 1.0, volume: 1.0, text: None, font_size: None,
             effects: Vec::new(), transition_in: None, text_color: None,
+            text_bg: None, text_shadow: false,
             speed_curve: None, keyframes: Vec::new(), freeze_duration: None,
             smooth_slowmo: false, overlay_scale: None, overlay_x: None, overlay_y: None,
         }

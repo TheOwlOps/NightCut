@@ -329,6 +329,26 @@ export default function Inspector() {
                   onChange={(e) => setSelectedTextStyle({ textColor: e.target.value })}
                 />
               </div>
+              <div className="row" style={{ alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12 }}>Background pill</span>
+                <input
+                  type="color"
+                  className="color-input"
+                  value={clip.textBg ?? "#000000"}
+                  onChange={(e) => setSelectedTextStyle({ textBg: e.target.value })}
+                />
+                {clip.textBg && (
+                  <button onClick={() => setSelectedTextStyle({ textBg: "" })}>Off</button>
+                )}
+                <label style={{ fontSize: 12, display: "flex", gap: 4, alignItems: "center" }}>
+                  <input
+                    type="checkbox"
+                    checked={clip.textShadow ?? false}
+                    onChange={(e) => setSelectedTextStyle({ textShadow: e.target.checked })}
+                  />
+                  Shadow
+                </label>
+              </div>
             </div>
           )}
           {clip.text === undefined && (

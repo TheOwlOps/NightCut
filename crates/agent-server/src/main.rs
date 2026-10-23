@@ -185,6 +185,8 @@ fn tool_call(state: &State, name: &str, args: &Value) -> ToolResult {
             let mut clip = Clip::text_clip(next_id("clip"), text, at, dur);
             if let Some(fs) = f64_of("fontSize") { clip.font_size = Some(fs as u32); }
             if let Some(c) = str_of("color") { clip.text_color = Some(c); }
+            if let Some(c) = str_of("bg") { clip.text_bg = Some(c); }
+            if args.get("shadow").and_then(|v| v.as_bool()).unwrap_or(false) { clip.text_shadow = true; }
             let id = clip.id.clone();
             p.add_clip("track-text", clip).map_err(|e| e.to_string())?;
             Ok(json!({ "ok": true, "clipId": id }))
@@ -337,7 +339,7 @@ fn tools_list() -> Value {
         t("nightcut_clip_delete", "Delete a clip by id.", json!({ "clipId": s("clip id") }), &["clipId"]),
         t("nightcut_clip_set", "Set clip speed / volume / PiP placement.", json!({ "clipId": s("clip id"), "speed": n("0.25-4"), "volume": n("0-2"), "overlayScale": n("0-1"), "overlayX": n("0-1"), "overlayY": n("0-1") }), &["clipId"]),
         t("nightcut_effect_add", "Add an effect to a clip. effect is the editor-core Effect JSON, e.g. {\"type\":\"sepia\",\"intensity\":0.7}, {\"type\":\"adjust\",\"brightness\":0.05,\"contrast\":1.1,\"saturation\":1.1}, {\"type\":\"loudnorm\",\"target_lufs\":-14}, {\"type\":\"pitch_shift\",\"semitones\":4}, {\"type\":\"lut\",\"path\":\"/x.cube\"}, {\"type\":\"curves\",\"master\":\"0/0 0.5/0.6 1/1\",\"red\":\"\",\"green\":\"\",\"blue\":\"\"}.", json!({ "clipId": s("clip id"), "effect": { "type": "object" } }), &["clipId", "effect"]),
-        t("nightcut_text_add", "Add a text clip at a timeline time.", json!({ "text": s("text"), "at": n("start"), "duration": n("seconds"), "fontSize": n("px"), "color": s("#rrggbb") }), &["text"]),
+        t("nightcut_text_add", "Add a text clip at a timeline time.", json!({ "text": s("text"), "at": n("start"), "duration": n("seconds"), "fontSize": n("px"), "color": s("#rrggbb"), "bg": s("caption pill #rrggbb"), "shadow": b("drop shadow") }), &["text"]),
         t("nightcut_captions_import_srt", "Import an .srt file as caption text clips.", json!({ "path": s("srt path"), "at": n("offset seconds") }), &["path"]),
         t("nightcut_captions_auto", "Auto-captions with a local whisper.cpp (binary + ggml model paths), added as text clips.", json!({ "path": s("media path"), "whisperBin": s("whisper-cli path"), "model": s("ggml model path"), "at": n("offset") }), &["path", "whisperBin", "model"]),
         t("nightcut_beats_detect", "Detect beats in an audio file and store them as project markers.", json!({ "path": s("audio path") }), &["path"]),

@@ -62,7 +62,12 @@ interface EditorState {
   setSelectedVolume: (volume: number) => void;
   setSelectedTransitionDuration: (duration: number) => void;
   removeSelectedTransition: () => void;
-  setSelectedTextStyle: (patch: { fontSize?: number; textColor?: string }) => void;
+  setSelectedTextStyle: (patch: {
+    fontSize?: number;
+    textColor?: string;
+    textBg?: string;
+    textShadow?: boolean;
+  }) => void;
   setSpeedCurve: (points: SpeedPoint[] | null) => void;
   addKeyframeAtPlayhead: () => void;
   /** Set beat markers (seconds) — view/edit state, no history entry. */
@@ -325,6 +330,11 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!clip) return;
     if (patch.fontSize !== undefined) clip.fontSize = patch.fontSize;
     if (patch.textColor !== undefined) clip.textColor = patch.textColor;
+    if (patch.textBg !== undefined) {
+      if (patch.textBg) clip.textBg = patch.textBg;
+      else delete clip.textBg;
+    }
+    if (patch.textShadow !== undefined) clip.textShadow = patch.textShadow;
     set(withHistory(s, next));
   },
 

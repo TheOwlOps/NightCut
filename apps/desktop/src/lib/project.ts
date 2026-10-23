@@ -376,6 +376,10 @@ export interface Clip {
   text?: string;
   fontSize?: number;
   textColor?: string;
+  /** Caption pill background (#RRGGBB) — drawn as a box behind the text. */
+  textBg?: string;
+  /** Drop shadow on text clips. */
+  textShadow?: boolean;
   effects?: Effect[];
   transitionIn?: { kind: string; duration: number };
   speedCurve?: SpeedPoint[];
@@ -492,6 +496,8 @@ export function toRustJson(p: Project): string {
             : {}),
           ...(c.transitionIn ? { transitionIn: c.transitionIn } : {}),
           ...(c.textColor ? { textColor: c.textColor } : {}),
+          ...(c.textBg ? { textBg: c.textBg } : {}),
+          ...(c.textShadow ? { textShadow: true } : {}),
           ...(c.speedCurve ? { speedCurve: c.speedCurve } : {}),
           ...(c.keyframes && c.keyframes.length > 0 ? { keyframes: c.keyframes } : {}),
           ...(c.freezeDuration !== undefined ? { freezeDuration: c.freezeDuration } : {}),

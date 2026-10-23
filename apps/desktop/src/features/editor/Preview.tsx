@@ -130,7 +130,18 @@ export default function Preview() {
               <div
                 key={c.id}
                 className="preview-text"
-                style={{ fontSize: (c.fontSize ?? 64) / 16, color: c.textColor ?? "#ffffff" }}
+                style={{
+                  fontSize: (c.fontSize ?? 64) / 16,
+                  color: c.textColor ?? "#ffffff",
+                  ...(c.textBg
+                    ? {
+                        background: `${c.textBg}cc`,
+                        padding: "0.1em 0.45em",
+                        borderRadius: "0.35em",
+                      }
+                    : {}),
+                  ...(c.textShadow ? { textShadow: "0.08em 0.08em 0.15em rgba(0,0,0,0.85)" } : {}),
+                }}
               >
                 {c.text}
               </div>
